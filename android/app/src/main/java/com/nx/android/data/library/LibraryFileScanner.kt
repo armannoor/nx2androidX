@@ -11,6 +11,15 @@ import java.io.File
  */
 object LibraryFileScanner {
 
+    /**
+     * Where an imported pack's host would be if it had one.
+     *
+     * An imported pack is supposed to carry no host (the phone that received it builds its own), so this
+     * path is only there to say "no host yet": it names the host the way a pack does, but there is no file
+     * at it, so the pack is marked as needing a runtime update.
+     */
+    const val NO_HOST = ".no-host/libdmplay.so"
+
     /** Half-written packs left by an interrupted archive operation. */
     fun partials(portsDir: File): List<File> =
         portsDir.listFiles()
@@ -80,8 +89,22 @@ object LibraryFileScanner {
         }
         val id = man.optString("title_id")
         if (!id.matches(Regex("[0-9A-Fa-f]{16}"))) return null
-        val host = File(pack, man.optString("host", "host/libdmplay.so"))
+        // the game's files in one RomFS image (a portable pack): the manifest says how big it should be,
+        // and a different size means the image is not the one the pack was made with
+        val image = File(pack, RomfsImage.FILE_NAME)
+        val hasImage = image.isFile
+        // The host: the one the manifest names.
+        //
+        // A pack the app made may keep it at the old path (a pack from before the runtime update moved it);
+        // a portable pack may not: it is supposed to carry no host at all (the phone that received it
+        // builds its own, for its own toolchain), and a host that came with the pack was built for the other
+        // phone. So a pack that carries the image uses only the host the manifest names, and without one it
+        // has no host yet (the path below is there so the name is right).
+        val host = man.optString("host").takeIf { it.isNotEmpty() }?.let { File(pack, it) }
+            ?: if (hasImage) File(pack, NO_HOST) else File(pack, "host/libdmplay.so")
         if (!host.canonicalFile.toPath().startsWith(pack.canonicalFile.toPath())) return null
+        val expected = man.optLong("romfs_size", 0L)
+        val broken = expected > 0 && hasImage && image.length() != expected
         return Ported(pack = pack, host = host,
                       icon = File(pack, "icon.png").takeIf { it.isFile },
                       titleId = id, name = man.optString("name"),
@@ -89,6 +112,9 @@ object LibraryFileScanner {
                       playerApiRevision = (man.opt("player_api_revision") as? Int)?.takeIf { it > 0 } ?: 0,
                       display = man.optString("display"),
                       romfsAt = man.optString("romfs_at"),
+                      romfsContainer = image.takeIf { it.isFile },
+                      romfsSha256 = man.optString("romfs_sha256"),
+                      romfsBroken = broken,
                       graphics = man.optString("graphics"),
                       lan = if (man.has("lan")) man.getBoolean("lan") else null)
     }
@@ -96,8 +122,7 @@ object LibraryFileScanner {
     /**
      * The title ID in a pack's manifest (the manifest alone: the host may be gone, and a pack without a host
      * is still a pack that has to be deleted).
-     */
-    fun manifestTitleId(pack: File): String? = try {
+     */    fun manifestTitleId(pack: File): String? = try {
         org.json.JSONObject(File(pack, "nx2a-data.json").readText())
             .optString("title_id").takeIf { it.isNotEmpty() }
     } catch (e: Exception) {

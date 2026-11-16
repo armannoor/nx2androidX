@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -386,6 +387,8 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
     // 设置是一整页，盖住顶栏与下面的页面：从顶栏的设置图标进来，关掉才回到底下的页面
     var settingsOpen by remember { mutableStateOf(false) }
     var settingsSection by remember { mutableStateOf(SettingsSection.ENVIRONMENT) }
+    // 「加一个别人导出的包」：顶栏那个 + 号先进这个说明框，框里的按钮再去选文件夹
+    var addPackHelp by remember { mutableStateOf(false) }
     // 手柄中心：从顶栏的手柄按钮进来，盖住整屏（跟设置页一样）。开着不开着是活动那边
     // 的一份（分发层也要知道：手柄的键该进中心还是进页面）
     val padDevices by GamepadScan.devices.collectAsStateWithLifecycle()
@@ -439,6 +442,7 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
             selected = tab,
             onSelect = { tab = it.ordinal },
             onRefresh = { lib.rescan() },
+            onAddPack = { addPackHelp = true },
             onSettings = { settingsOpen = true },
             padCount = padDevices.size,
             onOpenPadCenter = { onPadCenter(true) },
@@ -498,12 +502,40 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
                 onClose = { settingsOpen = false },
                 navActive = navHost == NavHost.SETTINGS)
         }
+        // 「加一个别人导出的包」的说明框：顶栏那个 + 号先进这里，框里的按钮再去选文件夹
+        if (addPackHelp) {
+            AlertDialog(
+                onDismissRequest = { addPackHelp = false },
+                title = { Text(locale.str(R.string.lib_portable_add_title)) },
+                text = { Text(locale.str(R.string.lib_portable_add_help)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        addPackHelp = false
+                        onRequest(PickerRequest(PickerMode.DIR, emptySet(), File("/storage"),
+                            locale.str(R.string.lib_portable_add_title),
+                            onPicked = { dir ->
+                                if (!com.nx.android.data.library.PortablePack.isPackFolder(dir)) {
+                                    actions.onToast(locale.str(R.string.lib_portable_add_not_found))
+                                } else if (!lib.addPack(dir)) {
+                                    actions.onToast(locale.str(R.string.lib_portable_add_already))
+                                } else {
+                                    actions.onToast(locale.str(R.string.lib_portable_add_done))
+                                }
+                            }))
+                    }) { Text(locale.str(R.string.lib_portable_add_pick)) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { addPackHelp = false }) { Text(locale.str(R.string.common_cancel)) }
+                },
+            )
+        }
     }
 }
 
 /** 一行式顶栏：品牌 + 两个纯文字 tab（选中亮/未选灰）+ 环境状态胶囊 + 右侧图标与时钟（capyps5 的骨架，我们的颜色） */
 @Composable
 private fun TopBar(selected: Int, onSelect: (Tab) -> Unit, onRefresh: () -> Unit,
+                   onAddPack: () -> Unit,
                    onSettings: () -> Unit,
                    padCount: Int, onOpenPadCenter: () -> Unit,
                    chip: EnvCheck.Chip, onChip: () -> Unit) {
@@ -539,6 +571,9 @@ private fun TopBar(selected: Int, onSelect: (Tab) -> Unit, onRefresh: () -> Unit
         }
         Spacer(Modifier.weight(1f))
         TopIcon(Icons.Filled.Refresh, stringResource(R.string.app_refresh_library), onRefresh)
+        Spacer(Modifier.width(6.dp))
+        // 加一个别人导出的包：先看一句说明，再去选文件夹
+        TopIcon(Icons.Filled.Add, stringResource(R.string.lib_portable_add_action), onAddPack)
         Spacer(Modifier.width(6.dp))
         // 手柄中心：顶栏的入口（接着几只手柄就亮几颗）
         PadIcon(padCount, onOpenPadCenter)

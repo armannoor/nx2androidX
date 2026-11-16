@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -33,6 +35,7 @@ import com.nx.android.appstate.LibraryState
 import com.nx.android.appstate.PlayerState
 import com.nx.android.appstate.PortState
 import com.nx.android.core.ui.LocalAppLocale
+import com.nx.android.core.ui.components.QuietButton
 import com.nx.android.core.ui.PreviewSurface
 import com.nx.android.core.ui.nav.NavHint
 import com.nx.android.core.ui.nav.NavHintBar
@@ -41,6 +44,7 @@ import com.nx.android.core.ui.nav.OnNavKey
 import com.nx.android.input.GamepadScan
 import com.nx.android.domain.GAME_FILE_EXTENSIONS
 import com.nx.android.data.library.GameProfile
+import com.nx.android.data.library.PortablePack
 import com.nx.android.domain.GameEntry
 import com.nx.android.domain.GameStatus
 import com.nx.android.domain.LibraryLogic
@@ -120,6 +124,7 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
             onGoBuilds()
         },
         onConfigure = { e -> viewModel?.selectGame(e) ?: run { lib.selected = e } },
+        // 加一个别人导出的包：顶栏那个 + 号（说明框 → 选文件夹）走的是 AppRoot 那条路
     )
 
     /**
@@ -198,7 +203,7 @@ fun LibraryRoute(viewModel: LibraryViewModel, port: PortState, player: PlayerSta
         navActive = navActive)
 }
 
-/** 页面上的动作：选一个游戏、构建、运行、看正在跑的构建、开配置 */
+/** 页面上的动作：选一个游戏、构建、运行、看正在跑的构建、开配置、加一个别人导出的包 */
 internal data class LibraryActions(
     val onSelect: (Int) -> Unit,
     val onBuild: (GameEntry) -> Unit,
@@ -228,6 +233,7 @@ internal fun LibraryContent(
     padConnected: Boolean = false,
 ) {
     val sel = entries.getOrNull(heroIndex)
+    val locale = LocalAppLocale.current
     // 提示条上确认键那一项写的文案：与左下角主按钮完全一样（同一个 mainActionOf）
     val mainLabel = sel?.let { e ->
         val stale = staleOf(e)

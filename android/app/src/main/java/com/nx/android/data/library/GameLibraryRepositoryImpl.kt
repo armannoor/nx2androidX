@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.nx.android.core.storage.AppPaths
 import com.nx.android.data.PrefsStore
+import com.nx.android.data.PrefsStore.Companion.LIB_ADDED
 import com.nx.android.data.PrefsStore.Companion.LIB_MEMORIES_MIGRATED
 import com.nx.android.data.PrefsStore.Companion.LIB_PACKS
 import com.nx.android.data.PrefsStore.Companion.LIB_PORTS
@@ -58,12 +59,24 @@ class GameLibraryRepositoryImpl @Inject constructor(
             byTitleInternal[titleId] = chosen.second
         }
         val work = LibraryFileScanner.workIndex(paths.work)
-        val result = LibraryLogic.merge(byTitle, work, sources)
+        val own = LibraryLogic.merge(byTitle, work, sources)
+        // 别人导出的包：每份一张卡，身份是它的文件夹（与 App 自有的卡各活各的，同一个游戏也能共存）
+        val imported = addedPackPaths().map { folder ->
+            val ported = LibraryFileScanner.portFromPack(folder)
+            GameEntry(
+                titleId = ported?.titleId.orEmpty(),
+                pack = ported,
+                work = null,
+                sourcePath = null,
+                importedPath = folder.absolutePath,
+            )
+        }
         byTitle.forEach { (titleId, pack) -> packPaths[titleId] = pack.pack.absolutePath }
         savePackPaths()
+        val all = (own + imported).sortedBy { it.label.lowercase() }
         Log.i("nx2a", "library scan: ${System.currentTimeMillis() - started} ms, " +
-            "${byTitle.size} packs on ${portsDirs().size} volumes, ${result.size} games")
-        return result
+            "${byTitle.size} packs on ${portsDirs().size} volumes, ${imported.size} added, ${all.size} games")
+        return all
     }
 
     override fun portsDirs(): List<File> = listOf(paths.ports) + StorageVolumes.removablePortsDirs(context).map { it.second }
@@ -159,6 +172,28 @@ class GameLibraryRepositoryImpl @Inject constructor(
     override fun rememberPackPath(titleId: String, path: String) {
         packPaths[titleId] = path
         savePackPaths()
+    }
+
+    // ---- 别人导出的包（它们的文件夹路径就是它们的身份） ----
+
+    @Synchronized
+    override fun addedPackPaths(): List<File> =
+        PortablePack.AddedPaths.decode(prefs.str(LIB_ADDED, "[]")).map { File(it) }
+
+    @Synchronized
+    override fun addPackPath(path: File): Boolean {
+        val paths = PortablePack.AddedPaths.decode(prefs.str(LIB_ADDED, "[]"))
+        val absolute = path.absolutePath
+        if (paths.contains(absolute)) return false
+        prefs.put(LIB_ADDED, PortablePack.AddedPaths.encode(paths + absolute))
+        return true
+    }
+
+    @Synchronized
+    override fun forgetPackPath(path: File) {
+        val absolute = path.absolutePath
+        val paths = PortablePack.AddedPaths.decode(prefs.str(LIB_ADDED, "[]")).filter { it != absolute }
+        prefs.put(LIB_ADDED, PortablePack.AddedPaths.encode(paths))
     }
 
     @Synchronized

@@ -39,6 +39,8 @@ class PrefsStore @Inject constructor(@ApplicationContext ctx: Context) {
         const val LIB_PACKS = "lib.packs"
         // title ID → the source file the game was last built from (for the rebuild button)
         const val LIB_SOURCES = "lib.sources"
+
+        const val LIB_ADDED = "lib.added"
         const val LIB_MEMORIES_MIGRATED = "lib.memories.migrated"
         // the guided setup
         const val OB_STEP = "ob.step"

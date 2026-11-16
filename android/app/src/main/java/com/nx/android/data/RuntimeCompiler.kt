@@ -16,6 +16,13 @@ class RuntimeCompiler @Inject constructor(private val guestLauncher: GuestProces
         var committed = false
         var reason = ""
         var drift = false
+        // A portable pack's image is checked against its manifest before the host is built: the recipe in
+        // the pack is only good for the files it was made with.
+        val broken = com.nx.android.data.library.PortablePack.checkImage(File(pack))
+        if (broken != null) {
+            log("[RED] Runtime update refused: $broken")
+            return RuntimeUpdateResult(false, broken)
+        }
         return try {
             val process = guestLauncher.guest(args(pack, noLsfg, allowProfileDrift))
             process.inputStream.bufferedReader().useLines { lines ->

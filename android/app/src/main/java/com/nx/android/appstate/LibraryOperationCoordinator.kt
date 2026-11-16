@@ -3,6 +3,8 @@ package com.nx.android.appstate
 import com.nx.android.data.library.GameCleanupFiles
 import com.nx.android.data.library.LibraryFileScanner
 import com.nx.android.data.library.PackMoverFiles
+import com.nx.android.data.library.PortablePack
+import com.nx.android.data.library.PortablePackSources
 import com.nx.android.domain.GameCleanup
 import com.nx.android.domain.GameEntry
 import com.nx.android.domain.GameConfig
@@ -20,6 +22,7 @@ class LibraryOperationCoordinator @Inject constructor(
     private val player: PlayerState,
     private val runtime: RuntimeUpdateState,
     private val repository: GameLibraryRepository,
+    private val paths: com.nx.android.core.storage.AppPaths,
 ) {
     private val moving = HashSet<String>()
 
@@ -86,6 +89,35 @@ class LibraryOperationCoordinator @Inject constructor(
     fun removalBlocked(entry: GameEntry): GameCleanup.Outcome? = synchronized(moving) { removalBlockedLocked(entry) }
 
     fun moveBlocked(entry: GameEntry): GameCleanup.Outcome? = moveBlocked(entry, includeMoving = true)
+
+    /**
+     * 导出一个可携带包：把游戏做成一个能带走的文件夹（包的文件 + 游戏的文件装在一个容器里 + 配方）。
+     *
+     * 源游戏一个字节都不动；落点先写临时名，写完才改名。
+     */
+    fun exportPack(entry: GameEntry, parent: File, onProgress: (Long, Long) -> Unit): PortablePack.Export {
+        moveBlocked(entry)?.let { return PortablePack.Export(false, reason = it.name.lowercase()) }
+        val ported = entry.pack ?: return PortablePack.Export(false, reason = "the game has no pack")
+        if (!synchronized(moving) { moving.add(entry.key) }) return PortablePack.Export(false, reason = "the pack is being moved already")
+        try {
+            moveBlocked(entry, includeMoving = false)?.let { return PortablePack.Export(false, reason = it.name.lowercase()) }
+            val files = PortablePackSources.gameFiles(ported.pack, ported.romfsAt)
+                ?: return PortablePack.Export(false, reason = "the game's files are not there")
+            val profile = PortablePackSources.profile(repository.workRoot(), File(paths.tool, "nxnative/dm/games"), entry.titleId)
+            return PortablePack.export(ported.pack, files, profile, entry.titleId, entry.label, parent, onProgress)
+        } finally {
+            synchronized(moving) { moving.remove(entry.key) }
+        }
+    }
+
+    /** 添加一个别人导出的包：只记它的路径，玩家的文件一个都不动 */
+    fun addPack(folder: File): Boolean = synchronized(moving) {
+        if (!PortablePack.isPackFolder(folder)) return@synchronized false
+        repository.addPackPath(folder)
+    }
+
+    /** 移除一个导入的包：只忘掉路径，那个文件夹和里面的东西都留着 */
+    fun forgetPack(folder: File) = synchronized(moving) { repository.forgetPackPath(folder) }
 
     fun planRemoval(entry: GameEntry): GameCleanup.Plan {
         val packs = repository.packsOf(entry)

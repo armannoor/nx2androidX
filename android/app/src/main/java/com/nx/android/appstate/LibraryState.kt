@@ -12,6 +12,7 @@ import com.nx.android.domain.GameStatus
 import com.nx.android.domain.LibraryLogic
 import com.nx.android.domain.PackMover
 import com.nx.android.data.AppLog
+import com.nx.android.data.library.PortablePack
 import com.nx.android.domain.Ported
 import java.io.File
 import java.util.concurrent.Executors
@@ -154,6 +155,19 @@ class LibraryState @Inject constructor(private val port: PortState,
 
     fun movePack(e: GameEntry, targetDir: File, onProgress: (PackMover.Progress) -> Unit = {}): PackMover.Result =
         operations.movePack(e, targetDir, onProgress).also { if (it.ok) rescan() }
+
+    /** 导出一个可携带包（一个能带走的文件夹） */
+    fun exportPack(e: GameEntry, parent: File, onProgress: (Long, Long) -> Unit = { _, _ -> }): PortablePack.Export =
+        operations.exportPack(e, parent, onProgress)
+
+    /** 添加一个别人导出的包：只记它的路径，不复制、不改写 */
+    fun addPack(folder: File): Boolean = operations.addPack(folder).also { if (it) rescan() }
+
+    /** 移除一个导入的包：只忘掉路径，那个文件夹和里面的东西都留着 */
+    fun forgetPack(folder: File) {
+        operations.forgetPack(folder)
+        rescan()
+    }
 
     fun moveBlocked(e: GameEntry): GameCleanup.Outcome? = operations.moveBlocked(e)
 

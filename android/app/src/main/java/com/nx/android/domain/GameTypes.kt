@@ -24,16 +24,21 @@ data class GameEntry(
     val pack: Ported?,          // 数据包
     val work: File?,            // 构建工作区
     val sourcePath: String?,    // 上次构建用的源文件路径（文件可能已经不在了）
+    val importedPath: String? = null,   // 导入的包：它的文件夹路径就是这张卡的身份
 ) {
     /** 上次构建用的那个源文件：还在吗 */
     val source: File? get() = sourcePath?.let { File(it) }?.takeIf { it.isFile }
 
     /** 卡片的稳定标识 */
-    val key: String get() = titleId
+    val key: String get() = importedPath ?: titleId
+
+    /** 这张卡是别人导出的包：它按自己的路径认人，与 App 自有的卡各活各的 */
+    val imported: Boolean get() = importedPath != null
 
     /** 卡上的名字：包清单里的游戏名；没有包就用记住的源路径中的文件名 */
     val label: String get() = pack?.name?.trim()?.takeIf { it.isNotEmpty() }
         ?: sourcePath?.let { GameIdentity.displayName(File(it)) }
+        ?: importedPath?.let { File(it).name }
         ?: titleId
 
     /**
@@ -109,6 +114,9 @@ data class Ported(
     val playerApiRevision: Int = 0, // Missing or invalid revisions require a runtime update.
     val display: String = "", // 清单里的显示版本（游戏自己的版本号，如 1.1.1）：老的数据包没有这一项
     val romfsAt: String = "", // 清单里的 romfs_at：游戏的文件不在包里，在工作区（老的数据包没有这一项：它们自带 RomFS）
+    val romfsContainer: File? = null, // 包里的游戏资源镜像（别人导出的包：游戏的文件在一个文件里）
+    val romfsSha256: String = "", // 清单里的 romfs_sha256：那个镜像的摘要（首跑编译宿主前核对一次）
+    val romfsBroken: Boolean = false, // 那个镜像的大小与清单说的不一样：它坏了
     val graphics: String = "", // 清单里的 graphics：游戏自己用的图形接口（vulkan / gl / nvn，空 = 不知道；老的数据包没有这一项）
     val lan: Boolean? = null, // 清单里的 lan：游戏能不能局域联机（null = 清单里没有这一项：老的数据包，由档案补上）
 ) {
@@ -116,13 +124,21 @@ data class Ported(
     val hasHost: Boolean get() = host.isFile
 
     /** The pack has its host, was built for the current player interface revision, and its game's files are there. */
-    val runnable: Boolean get() = host.isFile && playerApiRevision == PlayerApiRevision.CURRENT && !romfsMissing
+    val runnable: Boolean get() = host.isFile && playerApiRevision == PlayerApiRevision.CURRENT && !romfsMissing && !romfsBroken
 
     /** Missing host or a different/legacy revision requires a runtime update. */
     val needsRuntimeUpdate: Boolean get() = !host.isFile || playerApiRevision != PlayerApiRevision.CURRENT
 
     /**
      * 包的 RomFS 在工作区里（移植时没有复制一份进包）：那个文件夹没了，游戏就跑不起来 —— 要重新移植。
+     * 导出的包把游戏的文件放在一个镜像文件里：那个文件没了，游戏同样跑不起来。
+     *
+     * 包里带着镜像的时候，romfs_at 那条指针不作数：它指向的是导出那台手机上的文件夹，
+     * 收到包的手机上根本没有那个路径（包的清单里也已经把它删了）。
      */
-    val romfsMissing: Boolean get() = romfsAt.isNotEmpty() && !File(romfsAt).isDirectory
+    val romfsMissing: Boolean get() {
+        val image = romfsContainer
+        if (image != null) return !image.isFile          // the pack's own image: it has to be there
+        return romfsAt.isNotEmpty() && !File(romfsAt).isDirectory
+    }
 }

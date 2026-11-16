@@ -50,4 +50,36 @@ object StorageVolumes {
         }
         return out
     }
+
+    /**
+     * The filesystem a path is on ("vfat" for a FAT32 card, "exfat" for an exFAT one).
+     *
+     * The card's own mount is under /mnt (the volume's ID is in its path), while /storage holds the
+     * framework's own view of it — so the volume's ID is what tells the two apart.
+     */
+    fun fsTypeOf(path: File): String? {
+        val mounts = runCatching { File("/proc/mounts").readLines() }.getOrNull() ?: return null
+        val volume = volumeIdOf(path)
+        var best: String? = null
+        var bestLen = -1
+        for (line in mounts) {
+            val parts = line.split(' ')
+            if (parts.size < 3) continue
+            val point = parts[1]
+            val type = parts[2]
+            val matches = if (volume != null) point.contains(volume)
+            else path.absolutePath == point || path.absolutePath.startsWith("$point/")
+            if (matches && point.length > bestLen) { bestLen = point.length; best = type }
+        }
+        return best
+    }
+
+    /** The volume's ID ("1234-5678" for /storage/1234-5678/...), null for the internal storage. */
+    fun volumeIdOf(path: File): String? {
+        val absolute = path.absolutePath
+        if (!absolute.startsWith("/storage/")) return null
+        val rest = absolute.removePrefix("/storage/")
+        val id = rest.substringBefore('/')
+        return id.takeIf { it.isNotEmpty() && it.contains('-') }
+    }
 }

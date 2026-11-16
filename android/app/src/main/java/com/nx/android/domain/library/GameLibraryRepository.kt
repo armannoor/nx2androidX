@@ -23,4 +23,9 @@ interface GameLibraryRepository {
     fun rememberSource(titleId: String, source: String)
     fun noteDone(source: String, pack: String): String?
     fun forget(titleId: String)
+
+    /** The portable packs the player added: their folders are their identity. */
+    fun addedPackPaths(): List<File>
+    fun addPackPath(path: File): Boolean
+    fun forgetPackPath(path: File)
 }

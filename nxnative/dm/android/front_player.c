@@ -711,7 +711,11 @@ static void host_start_common(JNIEnv *E, JavaVM *vm, jobject actctx, const char 
     if (!freopen(p, "w", stderr)) __android_log_print(ANDROID_LOG_ERROR, "dmhost", "cannot write %s", p);
     setvbuf(stderr, NULL, _IOLBF, 0);
     setenv("DM_ROOT", g_root, 1);
-    snprintf(p, sizeof p, "%s/RomFS", g_root); setenv("DM_ROMFS", p, 0);
+    // The game's files: the environment's own row wins (the pack's env.txt), then the pack's RomFS folder.
+    // A portable pack has neither a RomFS folder nor a row: its files are in the image beside them (romfs.bin),
+    // and the host finds that itself -- so DM_ROMFS stays unset and the mount looks for the image.
+    snprintf(p, sizeof p, "%s/RomFS", g_root);
+    if (!access(p, F_OK)) setenv("DM_ROMFS", p, 0);
     // the player's games share the app's one internal folder: the title id (dm_java_start's DM_GAME_ID) keeps the saves and the temp apart
     const char *gid = getenv("DM_GAME_ID"); char sub[80] = "";
     if (gid && gid[0] && strlen(gid) < sizeof sub - 2) snprintf(sub, sizeof sub, "/%s", gid);

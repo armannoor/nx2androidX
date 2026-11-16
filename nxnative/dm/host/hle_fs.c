@@ -21,6 +21,23 @@
 #undef HLE_FORCE
 #define HLE_FORCE HLE_FORCE_BIG
 
+// A portable pack's RomFS image: a game's files in one file (hle_fs_container.c). The mount's source is the
+// image itself, and the files inside it are read out of it instead of off the volume.
+typedef struct romfsimg romfsimg;
+extern romfsimg *romfsimg_open(const char *path);
+extern void romfsimg_close(romfsimg *c);
+extern int romfsimg_is_image(const char *path);
+extern int romfsimg_lookup(romfsimg *c, const char *path, uint64_t *out);
+extern int romfsimg_entry_name(romfsimg *c, uint64_t i, char *out, size_t n);
+extern int romfsimg_entry_is_dir(romfsimg *c, uint64_t i);
+extern uint64_t romfsimg_entry_size(romfsimg *c, uint64_t i);
+extern uint64_t romfsimg_entry_data_off(romfsimg *c, uint64_t i);
+extern uint64_t romfsimg_first_child(romfsimg *c, uint64_t i);
+extern uint64_t romfsimg_next_sibling(romfsimg *c, uint64_t i);
+extern int romfsimg_read(romfsimg *c, uint64_t i, uint64_t off, void *buf, size_t sz, size_t *got);
+extern int romfsimg_fd(romfsimg *c);
+extern uint64_t romfsimg_count(romfsimg *c);
+
 #define RES_PATH_NOT_FOUND 0x202u      // fs module 2, description 1
 #define RES_PATH_EXISTS    0x402u      // fs module 2, description 2
 enum { MODE_READ = 1, MODE_WRITE = 2, MODE_APPEND = 4 };
@@ -35,7 +52,7 @@ _Static_assert(sizeof(DirectoryEntry) == 0x310, "DirectoryEntry layout");
 // Host: at mount, the committed directory commit (= $DM_SAVE) is clonefile'd as a whole tree into the working directory <commit>.work (APFS copy-on-write, nearly zero cost), and the mount points at the working directory,
 // all game reads and writes happen in the working directory; Commit = clonefile(work → <commit>.new), then renamex_np(RENAME_SWAP) swaps it atomically with commit, then the swapped-out old version is deleted.
 // Killed at any moment, commit is either the old version or the new version, never half-written / a mix of old and new; the next mount discards leftover .work / .new.
-typedef struct { char name[32]; char dir[1024]; char overlay[4096]; char commit[1024]; int ro; } mount_t;
+typedef struct { char name[32]; char dir[1024]; char overlay[4096]; char commit[1024]; int ro; romfsimg *ct; } mount_t;
 static mount_t g_mnt[MAX_MOUNT];   // commit non-empty = transactional save mount
 static int g_nmnt;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -185,13 +202,24 @@ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
             atomic_store(&g_save_poison, 0);                                // the working directory was just cloned from the committed version, intact
             strlcpy(g_mnt[g_nmnt].dir, work, sizeof g_mnt[0].dir); }
     } else strlcpy(g_mnt[g_nmnt].dir, dir, sizeof g_mnt[0].dir);
+    // A RomFS image as the mount's source: the game's files are in that one file (a portable pack's RomFS).
+    // The image is read strictly: a broken one is a failed mount, never a silent fallback to a directory.
+    g_mnt[g_nmnt].ct = NULL;
+    { struct stat cst;
+      if (!stat(g_mnt[g_nmnt].dir, &cst) && S_ISREG(cst.st_mode) && romfsimg_is_image(g_mnt[g_nmnt].dir)) {
+          g_mnt[g_nmnt].ct = romfsimg_open(g_mnt[g_nmnt].dir);
+          if (!g_mnt[g_nmnt].ct) {
+              LOG("[RED] fs mount %s: %s is a RomFS image but could not be read", name, g_mnt[g_nmnt].dir);
+              pthread_mutex_unlock(&g_lock);
+              return RES_FAIL; } } }
     g_nmnt++;
     pthread_mutex_unlock(&g_lock);
     if (txn_err) front_save_failed(txn_err);
     if (!ro && !txn) mkdir(dir, 0755);
     LOG("fs mount %s: → %s%s%s", name, txn ? g_mnt[g_nmnt - 1].dir : dir, ro || txn_err ? " (read-only)" : txn ? " (transactional save: work directory, swapped in atomically on Commit)" : "", g_mnt[g_nmnt - 1].overlay[0] ? " (overlay first)" : "");
+    if (g_mnt[g_nmnt - 1].ct) LOG("fs mount %s: %s is a RomFS image with %llu entries", name, g_mnt[g_nmnt - 1].dir, (unsigned long long)romfsimg_count(g_mnt[g_nmnt - 1].ct));
     // A read-only mount the host may not list: every lookup in it fails with EACCES and the game sees no files at all (issue #9: Mario vs. Donkey Kong then dereferenced a null at its first heap setup, which read as a crash of its own)
-    if (ro && !txn) { DIR *d = opendir(dir); int e = errno; struct stat st;
+    if (ro && !txn && !g_mnt[g_nmnt - 1].ct) { DIR *d = opendir(dir); int e = errno; struct stat st;
         if (d) closedir(d);
         else if (e == ENOENT) ;   // a game with no RomFS of its own, or a stand-in that is not there: lookups answer "not found" as they should
         else if (!stat(dir, &st))
@@ -354,6 +382,55 @@ static int norm_rest(const char *rest, char *out, size_t n) {
     }
     return 1;
 }
+// ---------- RomFS images ----------
+// A mount whose source is a RomFS image (a game's files in one file): the files inside it are read out of
+// that file, and its directories are listed from the image's index. The guest's file handle is a slot in a
+// table here, not a host file descriptor.
+#define CFH_BASE 0x40000000u
+#define CFH_SLOTS 1024
+static struct { int used; romfsimg *ct; uint64_t entry; } g_cfh[CFH_SLOTS];
+
+static uint64_t cfh_alloc(romfsimg *ct, uint64_t entry) {
+    for (int i = 0; i < CFH_SLOTS; i++) if (!g_cfh[i].used) {
+        g_cfh[i].used = 1; g_cfh[i].ct = ct; g_cfh[i].entry = entry;
+        return CFH_BASE | (uint64_t)i;
+    }
+    return 0;
+}
+static int cfh_get(uint64_t h, romfsimg **ct, uint64_t *entry) {
+    if ((h & 0xF0000000u) != CFH_BASE) return 0;
+    uint64_t i = h & 0xFFFFu;
+    if (i >= CFH_SLOTS || !g_cfh[i].used) return 0;
+    if (ct) *ct = g_cfh[i].ct;
+    if (entry) *entry = g_cfh[i].entry;
+    return 1;
+}
+static void cfh_free(uint64_t h) {
+    if ((h & 0xF0000000u) != CFH_BASE) return;
+    uint64_t i = h & 0xFFFFu;
+    if (i < CFH_SLOTS) g_cfh[i].used = 0;
+}
+// The RomFS image a guest path names, when it is in one
+static romfsimg *container_mount_of(const char *path) {
+    const char *c = strchr(path, ':');
+    if (!c) return NULL;
+    size_t ln = (size_t)(c - path);
+    for (int i = 0; i < g_nmnt; i++) {
+        if (!g_mnt[i].ct || strlen(g_mnt[i].name) != ln || strncmp(g_mnt[i].name, path, ln)) continue;
+        return g_mnt[i].ct;
+    }
+    return NULL;
+}
+// The entry a guest path names in a RomFS image mount
+static int container_entry(romfsimg *ct, const char *path, uint64_t *out) {
+    const char *c = strchr(path, ':');
+    if (!c) return 0;
+    char normed[1024];
+    if (!norm_rest(c + 1, normed, sizeof normed)) return 0;
+    const char *rel = normed[0] == '/' ? normed + 1 : normed;
+    if (!*rel) { *out = 0; return 1; }    // the mount's root itself
+    return romfsimg_lookup(ct, rel, out);
+}
 // create only allows the last component to not exist yet; intermediate directories still need an exact match.
 static int host_path_ex(const char *p, char *out, size_t n, int *ro, int create) {
     const char *c = strchr(p, ':');
@@ -407,10 +484,23 @@ static Result err_res(const char *op, const char *path) {
 #define RW_CREATE() if (ro) { if (!access(hp, F_OK)) return RES_PATH_EXISTS; LOG("fs write to a read-only mount: %s", hp); return RES_FAIL; }
 
 // ---------- Mount ----------
+// The RomFS mount's source: the file the environment names, else the portable pack's image beside the pack,
+// else the directory form.
+static const char *rom_source(char *buf, size_t n) {
+    const char *v = getenv("DM_ROMFS");
+    if (v) return v;
+    const char *root = getenv("DM_ROOT");
+    if (root) {
+        snprintf(buf, n, "%s/romfs.bin", root);
+        struct stat st;
+        if (!stat(buf, &st) && S_ISREG(st.st_mode)) return buf;
+    }
+    return envdir("DM_ROMFS", "romfs", buf, n);
+}
 HLE_FORCE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", "fsp-srv; rom reads the host directory directly, the cache gets only the minimum size", Result, h_fs_QueryRomCache, size_t *out) { *out = 0x1000; return RES_OK; }
-HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory", Result, h_fs_MountRom, const char *name, void *cache, size_t sz) {
+HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory (or a portable pack's RomFS image)", Result, h_fs_MountRom, const char *name, void *cache, size_t sz) {
     (void)cache; (void)sz; char b[1024];
-    Result r = mount(name, envdir("DM_ROMFS", "romfs", b, sizeof b), 1);
+    Result r = mount(name, rom_source(b, sizeof b), 1);
     if (r == RES_OK && getenv("DM_ROMFS_OVERLAY")) {
         PATH_LOCK();
         for (int i = 0; i < g_nmnt; i++) if (!strcmp(g_mnt[i].name, name)) {
@@ -686,6 +776,21 @@ HLE_FORCE("_ZN2nn2fs7UnmountEPKc", "fsp-srv; the mount table is permanent, unmou
 
 // ---------- Files ----------
 HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) {
+    // A file inside a RomFS image: its bytes live in that one file, not on the volume
+    romfsimg *ct = container_mount_of(path);
+    if (ct) {
+        uint64_t e;
+        if (!container_entry(ct, path, &e)) { errno = ENOENT; return err_res("open", path); }
+        if (romfsimg_entry_is_dir(ct, e)) { errno = ENOENT; return err_res("open", path); }
+        if (mode & (MODE_WRITE | MODE_APPEND)) { LOG("fs write to a read-only mount: %s", path); return RES_FAIL; }
+        uint64_t h = cfh_alloc(ct, e);
+        if (!h) return RES_FAIL;
+        *out = h;
+        fslog_init();
+        if (g_fslog && h < 4096) { pthread_mutex_lock(&g_fslog_lock); free(g_fdpath[h]); g_fdpath[h] = strdup(path); pthread_mutex_unlock(&g_fslog_lock); }
+        if (g_flag.fs) LOG("fs open [%.2fs] %s mode=%d → image entry %llu", (now_ns() - g_t0_ns) / 1e9, path, mode, (unsigned long long)e);
+        return RES_OK;
+    }
     HP(path);
     if (mode & (MODE_WRITE | MODE_APPEND)) RW();
     int fd = open(hp, (mode & (MODE_WRITE | MODE_APPEND)) ? ((mode & MODE_READ) ? O_RDWR : O_WRONLY) : O_RDONLY);
@@ -710,6 +815,30 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
 HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", Result, h_fs_ReadFile, size_t *out, uint64_t h, int64_t off, void *buf, size_t sz) {
     if (!h) { *out = 0; return RES_FAIL; }   // a file handle is an fd; 0 is stdin and never a file the game opened: the null handle the game keeps using after a failed open
     size_t got = 0; int reprep = 0;
+    // A file inside a RomFS image: the bytes come out of the image file at the entry's own offset
+    romfsimg *ct; uint64_t entry;
+    if (cfh_get(h, &ct, &entry)) {
+        uint64_t len = romfsimg_entry_size(ct, entry);
+        uint64_t base = romfsimg_entry_data_off(ct, entry);
+        if (off < 0) off = 0;
+        if ((uint64_t)off < len) {
+            uint64_t want = len - (uint64_t)off;
+            if (want < sz) sz = (size_t)want;
+            dm_guest_write_prepare(buf, sz);
+            while (got < sz) {
+                ssize_t r = pread(romfsimg_fd(ct), (uint8_t *)buf + got, sz - got, (off_t)(base + (uint64_t)off + got));
+                if (r < 0) { if (errno == EINTR) continue;
+                    if (errno == EFAULT && reprep++ < 8) { dm_guest_write_prepare((uint8_t *)buf + got, sz - got); continue; }
+                    LOG("[RED] fs ReadFile: image entry %llu at %lld+%zu could not be read", (unsigned long long)entry, (long long)off, sz);
+                    errno = EIO; return err_res("image read", "fd"); }
+                if (r == 0) break;
+                got += (size_t)r;
+            }
+        }
+        *out = got;
+        if (g_flag.fs) LOG("fs read: image entry %llu offset %lld length %zu", (unsigned long long)entry, (long long)off, got);
+        return RES_OK;
+    }
     dm_guest_write_prepare(buf, sz);   // The destination may be a texture pool page write-protected by the graphics layer: a kernel write to a read-only page returns EFAULT instead of page-faulting, so unprotect and mark dirty first
 #if defined(__ANDROID__)
     if (zon() && ZF(h)) {   // a packed RomFS file: decompressed in user space, so a page protected again meanwhile faults into the tracker's handler as any guest write does
@@ -752,6 +881,7 @@ HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", 
 }
 HLE_FORCE("_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE", "fsp-srv → pwrite(2)", Result, h_fs_WriteFile, uint64_t h, int64_t off, const void *buf, size_t sz, const void *opt) {
     if (!h) return RES_FAIL;
+    if (cfh_get(h, NULL, NULL)) { LOG("fs write to a read-only mount: a file inside a RomFS image"); errno = EROFS; return err_res("pwrite", "image"); }
     (void)opt; size_t put = 0;
     if (g_fsave[(int)h & 0xffff]) {                                     // Save write injection point (for deterministic regression; only writes on the save mount are counted)
         static int cfg = -1, kill_n, fail_n, fail_e;
@@ -774,6 +904,8 @@ HLE_FORCE("_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE", "fsp
 }
 HLE_FORCE("_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", "fsp-srv → fstat(2)", Result, h_fs_GetFileSize, int64_t *out, uint64_t h) {
     if (!h) return RES_FAIL;
+    romfsimg *ct; uint64_t entry;
+    if (cfh_get(h, &ct, &entry)) { *out = (int64_t)romfsimg_entry_size(ct, entry); return RES_OK; }   // a file inside a RomFS image: the entry's own length
 #if defined(__ANDROID__)
     if (zon() && ZF(h)) { *out = (int64_t)ZF(h)->raw; return RES_OK; }   // a packed RomFS file: the original's size
 #endif
@@ -782,6 +914,7 @@ HLE_FORCE("_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", "fsp-srv → fstat(2)", 
 }
 HLE_FORCE("_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl", "fsp-srv → ftruncate(2)", Result, h_fs_SetFileSize, uint64_t h, int64_t sz) {
     if (!h) return RES_FAIL;
+    if (cfh_get(h, NULL, NULL)) { errno = EROFS; return err_res("ftruncate", "image"); }
     if (!ftruncate((int)h, sz)) return RES_OK;
     if (g_fsave[(int)h & 0xffff]) save_poison(errno);
     return err_res("ftruncate", "fd");
@@ -789,9 +922,12 @@ HLE_FORCE("_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl", "fsp-srv → ftruncate(2)
 HLE_FORCE("_ZN2nn2fs9FlushFileENS0_10FileHandleE", "fsp-srv; host writes are already in the page cache, flushing is a no-op", Result, h_fs_FlushFile, uint64_t h) { (void)h; return RES_OK; }
 HLE_FORCE("_ZN2nn2fs9CloseFileENS0_10FileHandleE", "fsp-srv → close(2)", void, h_fs_CloseFile, uint64_t h) {
     if (!h) return;   // the null handle after a failed open (see ReadFile): do not touch fd 0
+    if (cfh_get(h, NULL, NULL)) { cfh_free(h); return; }   // a file inside a RomFS image: the slot goes back, there is no host fd
     g_fmode[(int)h & 0xffff] = 0; g_fsave[(int)h & 0xffff] = 0; if (zon()) zf_close((int)h);
     close((int)h); }
-HLE_FORCE("_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE", "fsp-srv; the open mode is recorded by the host", int, h_fs_GetFileOpenMode, uint64_t h) { return g_fmode[(int)h & 0xffff]; }
+HLE_FORCE("_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE", "fsp-srv; the open mode is recorded by the host", int, h_fs_GetFileOpenMode, uint64_t h) {
+    if (cfh_get(h, NULL, NULL)) return MODE_READ;   // a file inside a RomFS image is read-only
+    return g_fmode[(int)h & 0xffff]; }
 
 // ---------- Path operations ----------
 HLE_FORCE("_ZN2nn2fs10CreateFileEPKcl", "fsp-srv → open(O_CREAT|O_EXCL)+ftruncate", Result, h_fs_CreateFile, const char *path, int64_t sz) {
@@ -862,13 +998,19 @@ HLE_FORCE("_ZN2nn2fs10RenameFileEPKcS2_", "fsp-srv → rename(2)", Result, h_fs_
 // The Great Ace Attorney Chronicles (SDK 10) imports it; a directory carries its guest name the same way as a file
 HLE_FORCE("_ZN2nn2fs15RenameDirectoryEPKcS2_", "fsp-srv → rename(2) of a directory", Result, h_fs_RenameDir, const char *from, const char *to) { return rename_entry(from, to); }
 HLE_FORCE("_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", "fsp-srv → stat(2)", Result, h_fs_GetEntryType, int32_t *out, const char *path) {
+    romfsimg *ct = container_mount_of(path);
+    if (ct) {
+        uint64_t e;
+        if (!container_entry(ct, path, &e)) { errno = ENOENT; return err_res("stat", path); }
+        *out = romfsimg_entry_is_dir(ct, e) ? ENT_DIR : ENT_FILE; return RES_OK;
+    }
     HP(path); struct stat st;
     if (stat(hp, &st)) return err_res("stat", hp);
     *out = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; return RES_OK;
 }
 
 // ---------- Directories ----------
-typedef struct { DIR *d; char path[1024]; DIR *od; char opath[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode, ro; } dirh_t;   // ro: on a read-only mount (packed files only there)
+typedef struct { DIR *d; char path[1024]; DIR *od; char opath[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode, ro; romfsimg *ct; uint64_t cnext; } dirh_t;   // ro: on a read-only mount (packed files only there); ct: a directory inside a RomFS image (its children come from the image's index)
 static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     char *roots = strdup(m->overlay);
     char (*names)[0x301] = calloc(2048, sizeof *names);
@@ -903,6 +1045,17 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     free(resolved); free(rel); free(guest); free(parent); free(all); free(names); free(roots);
 }
 HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3)", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) {
+    // A directory inside a RomFS image: its children come from the image's index
+    romfsimg *ct = container_mount_of(path);
+    if (ct) {
+        uint64_t e;
+        if (!container_entry(ct, path, &e)) { errno = ENOENT; return err_res("opendir", path); }
+        if (!romfsimg_entry_is_dir(ct, e)) { errno = ENOTDIR; return err_res("opendir", path); }
+        dirh_t *h = calloc(1, sizeof *h);
+        if (!h) return RES_FAIL;
+        h->ct = ct; h->cnext = romfsimg_first_child(ct, e); h->mode = mode; h->ro = 1;
+        *out = (uint64_t)h; return RES_OK;
+    }
     HP(path); DIR *d = opendir(hp);
     if (!d) return err_res("opendir", hp);
     dirh_t *h = calloc(1, sizeof *h); h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;
@@ -917,6 +1070,18 @@ HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → o
 HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", "fsp-srv → readdir(3)", Result, h_fs_ReadDirectory, int64_t *count, DirectoryEntry *ents, uint64_t hh, int64_t max) {
     if (!hh) { *count = 0; return RES_FAIL; }
     PATH_LOCK(); dirh_t *h = (dirh_t *)hh; int64_t n = 0; struct dirent *e;
+    if (h->ct) {   // a directory inside a portable container: the container's index lists it
+        while (n < max && h->cnext != (uint64_t)-1) {
+            uint64_t child = h->cnext;
+            h->cnext = romfsimg_next_sibling(h->ct, child);
+            int isdir = romfsimg_entry_is_dir(h->ct, child);
+            if (!(h->mode & (isdir ? DIRMODE_DIR : DIRMODE_FILE))) continue;
+            DirectoryEntry *o = &ents[n++]; memset(o, 0, sizeof *o);
+            if (!romfsimg_entry_name(h->ct, child, o->name, sizeof o->name)) { n--; continue; }
+            o->type = isdir ? ENT_DIR : ENT_FILE; o->size = isdir ? 0 : (int64_t)romfsimg_entry_size(h->ct, child);
+        }
+        *count = n; return RES_OK;
+    }
     if (h->snap) { while (n < max && h->psnap < h->nsnap) { DirectoryEntry *src = &h->snap[h->psnap++]; if (!(h->mode & (src->type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE))) continue; ents[n++] = *src; } *count = n; return RES_OK; }
     int dfd = dirfd(h->d);
     while (n < max && (e = readdir(h->d))) {
@@ -934,7 +1099,7 @@ HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandl
 }
 HLE_FORCE("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", "fsp-srv → closedir(3)", void, h_fs_CloseDirectory, uint64_t hh) {
     if (!hh) return;   // the game also closes after a failed open (handle 0): nothing to do in the original either
-    dirh_t *h = (dirh_t *)hh; closedir(h->d); if (h->od) closedir(h->od); free(h->snap); free(h);
+    dirh_t *h = (dirh_t *)hh; if (h->d) closedir(h->d); if (h->od) closedir(h->od); free(h->snap); free(h);
 }
 
 // ---------- Overloads from newer SDKs (SDK 16: MountRom without a cache, ReadFile without the bytes-read output / with read options, directory entry count) ----------
@@ -950,6 +1115,13 @@ HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE", "fsp-
           size_t *out, uint64_t h, int64_t off, void *buf, size_t sz, const void *opt) { (void)opt; return h_fs_ReadFile(out, h, off, buf, sz); }
 HLE_FORCE("_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", "fsp-srv; directory entry count (filtered by the mode given at open, read position untouched)", Result, h_fs_DirCount, int64_t *out, uint64_t hh) {
     PATH_LOCK(); dirh_t *h = (dirh_t *)hh; int64_t n = 0;
+    if (h->ct) {   // a directory inside a portable container
+        for (uint64_t child = h->cnext; child != (uint64_t)-1; child = romfsimg_next_sibling(h->ct, child)) {
+            int isdir = romfsimg_entry_is_dir(h->ct, child);
+            if (h->mode & (isdir ? DIRMODE_DIR : DIRMODE_FILE)) n++;
+        }
+        *out = n; return RES_OK;
+    }
     if (h->snap) { for (int64_t i = 0; i < h->nsnap; i++) if (h->mode & (h->snap[i].type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE)) n++; *out = n; return RES_OK; }
     DIR *d = opendir(h->path); if (!d) return err_res("opendir", h->path);
     struct dirent *e;

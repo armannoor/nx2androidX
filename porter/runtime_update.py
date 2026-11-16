@@ -21,9 +21,12 @@ class ProfileDrift(ValueError):
     """The pack was built with a profile that no longer exists; the player may choose the profile the game has now."""
 
 
-def profile_candidates(title_id):
-    """Where the profile this pack was built with may live: the workspace's own copies first (the headroom copy,
-    the derived one, the provisional one), then the payload's registered profile."""
+def profile_candidates(title_id, pack=None):
+    """Where the profile this pack was built with may live: the pack's own copy first (a portable pack carries
+    the recipe it was built with, so it can be rebuilt on another phone), then the workspace's own copies (the
+    headroom copy, the derived one, the provisional one), then the payload's registered profile."""
+    if pack is not None:
+        yield Path(pack) / 'profile' / title_id
     build = Path(os.environ.get('NX2A_WORK') or tempfile.gettempdir()) / f'{title_id}_build'
     for name in ('profile-mem', 'profile-derived', 'profile'):
         yield build / name / title_id
@@ -43,7 +46,7 @@ def profile_fingerprint(directory):
         return hashlib.sha256(header.read_bytes()).hexdigest()
 
 
-def find_profile(title_id, expected, allow_drift=False):
+def find_profile(title_id, expected, allow_drift=False, pack=None):
     """(the profile to rebuild with, its fingerprint, whether any candidate was there at all)
 
     A pack that recorded no fingerprint (made before the profiles were fingerprinted) cannot be checked: it gets
@@ -51,7 +54,7 @@ def find_profile(title_id, expected, allow_drift=False):
     is told to port the game again if it misbehaves afterwards."""
     found = False
     first = None
-    for candidate in profile_candidates(title_id):
+    for candidate in profile_candidates(title_id, pack):
         fingerprint = profile_fingerprint(candidate)
         if fingerprint is None: continue
         found = True
@@ -76,7 +79,7 @@ def rebuild(pack, *, no_lsfg=False, jobs=None, allow_profile_drift=False, emit=p
         raise ValueError('Invalid game identity. Port the game again from its original files.')
     fingerprint = manifest.get('profile_h')
     if not isinstance(fingerprint, str) or not fingerprint: fingerprint = None   # an old pack: trusted, not checked
-    profile, chosen, found = find_profile(title_id, fingerprint, allow_drift=allow_profile_drift)
+    profile, chosen, found = find_profile(title_id, fingerprint, allow_drift=allow_profile_drift, pack=pack)
     if profile is None:
         if not found:
             raise ValueError('No game profile for this game. Port the game again from its original files.')

@@ -108,6 +108,21 @@ for name in ('libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', '
         self.rebuild()
         self.assert_preserved(manifest=False)
 
+    def test_the_profile_the_pack_carries_is_used_when_the_workspace_has_none(self):
+        # a portable pack carries the recipe it was built with: another phone can rebuild its runtime from it
+        fingerprint = self.profile(self.pack / 'profile')
+        self.record(fingerprint)
+        self.rebuild()
+        self.assert_preserved(manifest=False)
+
+    def test_the_pack_carried_profile_wins_over_the_workspace_one(self):
+        # the pack carries the recipe it was built with; the workspace's copy is a different one
+        fingerprint = self.profile(self.pack / 'profile')
+        self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived', text='a different profile')
+        self.record(fingerprint)
+        self.rebuild()
+        self.assert_preserved(manifest=False)
+
     def test_a_changed_profile_is_refused_before_compilation(self):
         self.profile(self.root / 'work' / f'{self.title}_build' / 'profile-derived', 'another game profile')
         self.record(hashlib.sha256(b'effective game profile with adjusted memory').hexdigest())

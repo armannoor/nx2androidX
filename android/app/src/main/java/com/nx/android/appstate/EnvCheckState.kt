@@ -71,6 +71,15 @@ class EnvCheckState @Inject constructor(
     var firmwareImported by mutableStateOf(true); private set
 
     /**
+     * The imported firmware's file name (empty when there is none).
+     *
+     * It is a state, not a plain read of the preferences: the rows that show it (the checklist, the settings
+     * page, the guided setup) read it while they draw, so an import or a clear is shown at once instead of
+     * leaving a stale name on the screen.
+     */
+    var firmwareName by mutableStateOf(""); private set
+
+    /**
      * The chip's verdict: the two cheap facts and the child-process limit's state.
      *
      * It is read out of the facts instead of being kept, because the limit's state arrives later than the
@@ -161,6 +170,7 @@ class EnvCheckState @Inject constructor(
         keysPath = prefs.keys
         keysOk = keysPath.isNotBlank() && File(keysPath).isFile()
         firmwareImported = prefs.str(PrefsStore.FIRMWARE).isNotBlank()
+        firmwareName = prefs.str(PrefsStore.FIRMWARE)
         known = true
         readExpectedProfiles()
         readProfiles()

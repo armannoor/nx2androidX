@@ -89,6 +89,7 @@ import com.nx.android.game.overlay.GameDrawer
 import com.nx.android.game.overlay.TextPrompt
 import com.nx.android.input.GamepadScan
 import com.nx.android.input.PadAssignment
+import com.nx.android.input.PadAxes
 import com.nx.android.input.PadCalibration
 import com.nx.android.input.PadProfileStore
 import com.nx.android.input.PadSpec
@@ -272,6 +273,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 player = assignment.playerOf(info.profileKey),
                 calibration = profile?.calibration ?: PadCalibration(),
                 bindings = profile?.bindings ?: emptyMap(),
+                zTrig = info.roles.zTrig,
+                rxStick = info.roles.rxStick,
             )
         })
         val ok = runCatching { Native.padMapping(spec) }.isSuccess
@@ -805,10 +808,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         return true
     }
 
-    private fun axes(e: MotionEvent): FloatArray = floatArrayOf(
-        e.getAxisValue(MotionEvent.AXIS_X), e.getAxisValue(MotionEvent.AXIS_Y), e.getAxisValue(MotionEvent.AXIS_Z), e.getAxisValue(MotionEvent.AXIS_RZ),
-        e.getAxisValue(MotionEvent.AXIS_LTRIGGER), e.getAxisValue(MotionEvent.AXIS_RTRIGGER), e.getAxisValue(MotionEvent.AXIS_HAT_X), e.getAxisValue(MotionEvent.AXIS_HAT_Y),
-        e.getAxisValue(MotionEvent.AXIS_BRAKE), e.getAxisValue(MotionEvent.AXIS_GAS))
+    private fun axes(e: MotionEvent): FloatArray = PadAxes.read(e)
 
     /**
      * everything is consumed here (as the NativeActivity's queue did) — except the volume keys, which belong to

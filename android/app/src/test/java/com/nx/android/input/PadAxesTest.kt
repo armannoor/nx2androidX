@@ -22,32 +22,58 @@ class PadAxesTest {
         )
     }
 
+    /** 摇杆的四根轴（双向，-1..1）。 */
+    private fun stick(vararg axes: Int): List<PadAxes.Range> =
+        axes.map { PadAxes.Range(it, -1f, 1f) }
+
     @Test
     fun `a pad with no known topology gets no roles`() {
         // Z/RZ 双向（老约定的右摇杆），没有 RX/RY：NS 手柄与老式安卓约定
-        val roles = PadAxes.rolesOf(listOf(0 to -1f, 1 to -1f, 11 to -1f, 14 to -1f))
+        val roles = PadAxes.rolesOf(stick(0, 1, 11, 14))
         assertEquals(PadAxes.Roles(), roles)
     }
 
     @Test
     fun `a pad whose triggers live on Z RZ gets the ztrig role`() {
-        // Xbox 族：Z/RZ 单向（从 0 起），右摇杆在 RX/RY
-        val roles = PadAxes.rolesOf(listOf(0 to -1f, 1 to -1f, 11 to 0f, 14 to 0f, 12 to -1f, 13 to -1f))
+        // Xbox 族：Z/RZ 单向（0..1），右摇杆在 RX/RY
+        val roles = PadAxes.rolesOf(listOf(
+            PadAxes.Range(0, -1f, 1f), PadAxes.Range(1, -1f, 1f),
+            PadAxes.Range(11, 0f, 1f), PadAxes.Range(14, 0f, 1f),
+            PadAxes.Range(12, -1f, 1f), PadAxes.Range(13, -1f, 1f),
+        ))
         assertTrue(roles.zTrig)
         assertTrue(roles.rxStick)
     }
 
     @Test
+    fun `a kernel range of 0 to 255 is not a trigger`() {
+        // GameSir-X5 Lite：内核的 ABS_Z/ABS_RZ 是 0..255（中心 128）——那是右摇杆。
+        // 框架若照原样报出来，只看下限就会把它误当成扳机（右摇杆会跟着没）。
+        val roles = PadAxes.rolesOf(listOf(
+            PadAxes.Range(0, 0f, 255f), PadAxes.Range(1, 0f, 255f),
+            PadAxes.Range(11, 0f, 255f), PadAxes.Range(14, 0f, 255f),
+        ))
+        assertFalse(roles.zTrig)
+        assertFalse(roles.rxStick)
+    }
+
+    @Test
     fun `rx ry present means the right stick lives there`() {
         // 两对都在且都双向（有的手柄为了兼容两套都报）：右摇杆认 RX/RY，Z/RZ 不当扳机
-        val roles = PadAxes.rolesOf(listOf(11 to -1f, 14 to -1f, 12 to -1f, 13 to -1f))
+        val roles = PadAxes.rolesOf(listOf(
+            PadAxes.Range(11, -1f, 1f), PadAxes.Range(14, -1f, 1f),
+            PadAxes.Range(12, -1f, 1f), PadAxes.Range(13, -1f, 1f),
+        ))
         assertFalse(roles.zTrig)
         assertTrue(roles.rxStick)
     }
 
     @Test
     fun `ztrig without rx ry still claims the triggers`() {
-        val roles = PadAxes.rolesOf(listOf(0 to -1f, 1 to -1f, 11 to 0f, 14 to 0f))
+        val roles = PadAxes.rolesOf(listOf(
+            PadAxes.Range(0, -1f, 1f), PadAxes.Range(1, -1f, 1f),
+            PadAxes.Range(11, 0f, 1f), PadAxes.Range(14, 0f, 1f),
+        ))
         assertTrue(roles.zTrig)
         assertFalse(roles.rxStick)
     }
@@ -55,14 +81,21 @@ class PadAxesTest {
     @Test
     fun `half a trigger pair is not a trigger pair`() {
         // 只有 Z 单向、RZ 双向：不冒认（两根都单向才算）
-        val roles = PadAxes.rolesOf(listOf(11 to 0f, 14 to -1f, 12 to -1f, 13 to -1f))
+        val roles = PadAxes.rolesOf(listOf(
+            PadAxes.Range(11, 0f, 1f), PadAxes.Range(14, -1f, 1f),
+            PadAxes.Range(12, -1f, 1f), PadAxes.Range(13, -1f, 1f),
+        ))
         assertFalse(roles.zTrig)
         assertTrue(roles.rxStick)
     }
 
     @Test
     fun `a stick-only pad has no z rz at all`() {
-        val roles = PadAxes.rolesOf(listOf(0 to -1f, 1 to -1f, 12 to -1f, 13 to -1f, 17 to 0f, 18 to 0f))
+        val roles = PadAxes.rolesOf(listOf(
+            PadAxes.Range(0, -1f, 1f), PadAxes.Range(1, -1f, 1f),
+            PadAxes.Range(12, -1f, 1f), PadAxes.Range(13, -1f, 1f),
+            PadAxes.Range(17, 0f, 1f), PadAxes.Range(18, 0f, 1f),
+        ))
         assertFalse(roles.zTrig)
         assertTrue(roles.rxStick)
     }

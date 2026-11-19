@@ -48,16 +48,24 @@ object PadAxes {
     private const val AXIS_RY = 13
     private const val AXIS_RZ = 14
 
+    /** 一根轴的量程（框架归一化之后的空间：摇杆 -1..1，单向的扳机 0..1）。 */
+    data class Range(val axis: Int, val min: Float, val max: Float)
+
     /**
-     * 从量程推断角色：入参是（轴 id，量程下限）。Z/RZ **两根都单向**（下限 ≥ 0）才算扳机——
-     * 摇杆永远是双向的，这是两种拓扑之间最硬的区别；RX/RY 存在即右摇杆（手柄上它们不当别的用）。
+     * 从量程推断角色：入参是每根轴的（id, 下限, 上限）。
+     *
+     * Z/RZ **两根都单向**（下限 ≥ 0 且上限 ≤ 1）才算扳机——摇杆永远是双向的（-1..1），
+     * 这是两种拓扑之间最硬的区别。上限这一半的判据不能省：有些手柄的内核量程是 0..255
+     * （中心在 128），框架若照原样报出来，下限也是 0，只看下限会把**右摇杆**误当成扳机；
+     * 限死上限 1，宁可漏认（老路照旧）也不误认。
+     * RX/RY 存在且双向 → 右摇杆在那两根轴上。
      */
-    fun rolesOf(ranges: List<Pair<Int, Float>>): Roles {
-        val minOf = ranges.toMap()
-        val rxStick = AXIS_RX in minOf && AXIS_RY in minOf
-        val zMin = minOf[AXIS_Z]
-        val rzMin = minOf[AXIS_RZ]
-        val zTrig = zMin != null && rzMin != null && zMin >= 0f && rzMin >= 0f
+    fun rolesOf(ranges: List<Range>): Roles {
+        val byAxis = ranges.associateBy { it.axis }
+        val rxStick = (byAxis[AXIS_RX]?.let { it.min < 0f } == true) &&
+            (byAxis[AXIS_RY]?.let { it.min < 0f } == true)
+        val zTrig = (byAxis[AXIS_Z]?.let { it.min >= 0f && it.max <= 1f } == true) &&
+            (byAxis[AXIS_RZ]?.let { it.min >= 0f && it.max <= 1f } == true)
         return Roles(zTrig = zTrig, rxStick = rxStick)
     }
 
@@ -65,6 +73,6 @@ object PadAxes {
     fun rolesOf(device: InputDevice): Roles = rolesOf(
         device.motionRanges
             .filter { it.isFromSource(InputDevice.SOURCE_JOYSTICK) }
-            .map { it.axis to it.min },
+            .map { Range(it.axis, it.min, it.max) },
     )
 }

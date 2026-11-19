@@ -5,8 +5,9 @@ import java.io.File
 /**
  * The game's runtime log: the host writes its whole stderr into `log.txt` in the game's data pack
  * (front_player.c's host_start_common), and the run before it into `log.prev.txt` — the host renames the log
- * at every start, so a crash's backtrace is in the one before the last. The app shares those as a bundle: the
- * device's facts, the game's facts and the logs.
+ * at every start, so a crash's backtrace is in the one before the last. The app's own runtime rebuild for
+ * that pack goes into `rebuild.log`. The app shares those as a bundle: the device's facts, the game's facts
+ * and the logs.
  */
 object GameLog {
 
@@ -16,11 +17,17 @@ object GameLog {
     /** the run before that (the host renames the log at every start) */
     const val PREV_FILE = "log.prev.txt"
 
+    /** the app's own log of the runtime rebuild it did for this pack (the newest attempt) */
+    const val REBUILD_FILE = "rebuild.log"
+
     /** the log of the last run in that pack, or null when the game has never run */
     fun inPack(pack: File): File? = File(pack, FILE).takeIf { it.isFile }
 
     /** the log of the run before the last one: a crash's backtrace is in here */
     fun previousInPack(pack: File): File? = File(pack, PREV_FILE).takeIf { it.isFile }
+
+    /** the log of the last runtime rebuild, or null when this pack never needed one */
+    fun rebuildInPack(pack: File): File? = File(pack, REBUILD_FILE).takeIf { it.isFile }
 
     /** the name the shared bundle carries: the game's own name, safe in a file name */
     fun shareName(game: String): String = "${SaveBackup.sanitize(game).ifEmpty { "game" }}-log.zip"
@@ -30,15 +37,21 @@ object GameLog {
         "game: $game\ntitle id: $titleId\nversion: $version\nprofile status: $status\n" +
             "player api revision: $playerApiRevision\n"
 
-    /** The host's logs in that pack: the last run and the one before it */
+    /**
+     * The logs in that pack: the last run, the run before it, and the runtime rebuild the app did for it.
+     *
+     * The rebuild belongs to the game, not to the app: a game that failed to start after a rebuild has no
+     * host log at all, and that rebuild is the only thing that says why.
+     */
     fun logs(pack: File): List<Pair<String, File>> = listOfNotNull(
         inPack(pack)?.let { FILE to it },
         previousInPack(pack)?.let { PREV_FILE to it },
+        rebuildInPack(pack)?.let { REBUILD_FILE to it },
     )
 
     /**
-     * The bundle in dest: the device, the game and the host's logs of the last two runs.
-     * Null when the game has never run: there is no log to share.
+     * The bundle in dest: the device, the game and the logs of that pack.
+     * Null when the pack has no log at all: there is nothing to share.
      *
      * @param device the device's and the app's own facts as text
      * @param game the game's own name (the bundle's file name carries it)

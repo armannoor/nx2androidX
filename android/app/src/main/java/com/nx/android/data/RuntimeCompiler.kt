@@ -17,7 +17,7 @@ data class RuntimeUpdateResult(val success: Boolean, val reason: String = "")
  */
 class RuntimeCompiler @Inject constructor(private val guestLauncher: GuestProcessLauncher) {
     fun rebuild(pack: String, noLsfg: Boolean = !BuildConfig.NX_LSFG,
-                log: (String) -> Unit = AppLog::line): RuntimeUpdateResult {
+                log: (String) -> Unit): RuntimeUpdateResult {
         var committed = false
         var reason = ""
         return try {

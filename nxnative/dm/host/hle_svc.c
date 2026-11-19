@@ -23,6 +23,9 @@ int dm_guest_heap_readable(uint64_t a, size_t n) { uint64_t b = (uint64_t)(uintp
 static uint8_t *g_alias; static size_t g_alias_cap;
 static _Atomic uint64_t *g_alias_bits;   // alias region page bitmap (alias_pages)
 static uint8_t *g_stack; static size_t g_stack_cap;
+// The heap's base and the extent opened so far (the cheat VM's region 1), and the alias region's base and size (its region 2)
+void dm_guest_heap_range(uint64_t *base, size_t *open) { *base = (uint64_t)(uintptr_t)g_heap; *open = g_heap_cur; }
+void dm_guest_alias_range(uint8_t **base, size_t *size) { *base = g_alias; *size = g_alias_cap; }
 // The address lies in the guest address block (every guest thread stack is here: the game's own heap or the stack region); the big-stack entry (hle_bigstack.c) uses it to decide whether to switch stacks
 int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_as && a >= b && a - b < RESERVE; }
 

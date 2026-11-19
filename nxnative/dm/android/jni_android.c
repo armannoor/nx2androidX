@@ -387,3 +387,75 @@ Java_com_nx_android_game_Native_gpuTurboGet(JNIEnv *E, jclass c) {
     const char *out = !e || atoi(e) <= 0 ? "0" : !strcmp(e, "auto") ? "auto" : "1";
     return (*E)->NewStringUTF(E, out);
 }
+
+// ---- Cheats (hle_cheats.c): the Atmosphère-format cheats of the running build ----
+
+// The cheats the host has, as a JSON array (one object per cheat: its name, whether it is on, why it cannot run).
+// The names come from a community file, so they are escaped: a quote or a backslash in a name must not break the JSON.
+JNIEXPORT jstring JNICALL
+Java_com_nx_android_game_Native_cheatsList(JNIEnv *E, jclass c) {
+    (void)c;
+    int n = dm_cheats_count();
+    size_t cap = 64 + (size_t)n * 320;
+    char *buf = malloc(cap);
+    if (!buf) return (*E)->NewStringUTF(E, "[]");
+    size_t len = 0;
+    len += (size_t)snprintf(buf + len, cap - len, "[");
+    for (int i = 0; i < n; i++) {
+        const char *name = "", *why = "";
+        int on = 0;
+        if (!dm_cheats_row(i, &name, &on, &why)) continue;
+        len += (size_t)snprintf(buf + len, cap - len, "%s{\"name\":\"", i ? "," : "");
+        for (const unsigned char *p = (const unsigned char *)name; *p && len + 8 < cap; p++) {
+            if (*p == '"' || *p == '\\') buf[len++] = '\\';
+            if (*p < 0x20) { len += (size_t)snprintf(buf + len, cap - len, "\\u%04x", *p); continue; }
+            buf[len++] = (char)*p;
+        }
+        len += (size_t)snprintf(buf + len, cap - len, "\",\"on\":%s,\"why\":\"", on ? "true" : "false");
+        for (const unsigned char *p = (const unsigned char *)why; *p && len + 8 < cap; p++) {
+            if (*p == '"' || *p == '\\') buf[len++] = '\\';
+            if (*p < 0x20) { len += (size_t)snprintf(buf + len, cap - len, "\\u%04x", *p); continue; }
+            buf[len++] = (char)*p;
+        }
+        len += (size_t)snprintf(buf + len, cap - len, "\"}");
+    }
+    if (len + 2 < cap) { buf[len++] = ']'; buf[len] = 0; } else buf[cap - 1] = 0;
+    jstring out = (*E)->NewStringUTF(E, buf);
+    free(buf);
+    return out;
+}
+
+// The build ID the cheat files are named by (the first 16 hex digits of main's build ID, upper case): the app uses it
+// to pick the file of this build in the community library.
+JNIEXPORT jstring JNICALL
+Java_com_nx_android_game_Native_cheatsBuild(JNIEnv *E, jclass c) {
+    (void)c;
+    return (*E)->NewStringUTF(E, dm_cheats_build());
+}
+
+// Switch one cheat on or off: 1 = done, -1 = it cannot run (it writes the game's code), 0 = no such cheat.
+JNIEXPORT jint JNICALL
+Java_com_nx_android_game_Native_cheatsSet(JNIEnv *E, jclass c, jint index, jboolean on) {
+    (void)E; (void)c;
+    return dm_cheats_set(index, on ? 1 : 0);
+}
+
+// Load the cheats of the running build from the folder the app names (the app's own cheats/ folder, where the file
+// it downloaded from the community library lies): the number of cheats (0 = none for this build).
+JNIEXPORT jint JNICALL
+Java_com_nx_android_game_Native_cheatsOpen(JNIEnv *E, jclass c, jstring dir) {
+    (void)c;
+    if (!dir) return 0;
+    const char *d = (*E)->GetStringUTFChars(E, dir, NULL);
+    if (!d) return 0;
+    int n = dm_cheats_open(d);
+    (*E)->ReleaseStringUTFChars(E, dir, d);
+    return n;
+}
+
+// Drop the cheats: the host neither loads nor runs them any more.
+JNIEXPORT void JNICALL
+Java_com_nx_android_game_Native_cheatsClose(JNIEnv *E, jclass c) {
+    (void)E; (void)c;
+    dm_cheats_close();
+}

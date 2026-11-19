@@ -57,6 +57,29 @@ class GameLogTest {
     }
 
     @Test
+    fun theRebuildOfThatPackIsInItsLogs() {
+        val pack = tmp()
+        assertNull("a pack that never needed a rebuild has none", GameLog.rebuildInPack(pack))
+        val rebuild = File(pack, "rebuild.log")
+        rebuild.writeText("[RED] the runtime rebuild failed\n")
+        assertEquals(rebuild, GameLog.rebuildInPack(pack))
+        assertEquals(listOf("rebuild.log" to rebuild), GameLog.logs(pack))
+    }
+
+    @Test
+    fun aGameThatFailedItsRebuildStillHasSomethingToShare() {
+        val pack = tmp()
+        File(pack, "rebuild.log").writeText("[RED] the runtime rebuild failed\n")
+        val dest = tmp()
+        val zip = GameLog.bundle("device: test\n", "Hades", "game: Hades\n", pack, dest)
+        assertNotNull("the rebuild is a log to share", zip)
+        val in_ = entries(zip!!)
+        assertTrue("the rebuild is in it: ${in_.keys}", in_.containsKey("rebuild.log"))
+        assertTrue("the rebuild is in it", in_["rebuild.log"]!!.contains("the runtime rebuild failed"))
+        assertTrue("the game never ran, so there is no host log: ${in_.keys}", !in_.containsKey("log.txt"))
+    }
+
+    @Test
     fun theBundleHoldsTheDeviceTheGameAndBothLogs() {
         val pack = packWithLog("[dm] the last run\n")
         File(pack, "log.prev.txt").writeText("[dm] the run before it\n")

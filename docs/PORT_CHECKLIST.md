@@ -8,7 +8,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative, synced from upstream (see [UPSTREAM_PROFILES.md](UPSTREAM_PROFILES.md)): the profile is here, the game is not necessarily ported to Android yet. A game without an `android.tsv` can still be tried as an experimental port (`porter build --experimental`). "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**60 / 113 ported**
+**61 / 113 ported**
 
 **Credit.** A ported game names the person who brought it up (`ported by @handle`), taken from the commit that added its profile. The ports from before this was written down are credited to the author of the commit that introduced them.
 
@@ -95,7 +95,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Rhythm Heaven Groove · `0100D9F01D474000`
 - [ ] ROMANCE OF THE THREE KINGDOMS 8 REMAKE · `0100C2A01A730000` · profile here · controller only
 - [ ] SHIN MEGAMI TENSEI V: Vengeance · `010069C01AB82000` · profile here · 60 fps with 1.0.3
-- [ ] Silver Pines · `0100D5B026844000` · profile here
+- [x] Silver Pines · `0100D5B026844000` · v65536 (1.0.1); tested on the Xiaomi 23117RK66C (Android 16) · ported by @zfitness
 - [x] South Park™: The Stick Of Truth™ · `010043600B6A6000` · needs a Vulkan 1.3 driver or imageless framebuffers with render pass 2 (Turnip packed on the Adreno 640)
 - [ ] SteamWorld Heist II · `010089C01E9CA000` · profile here
 - [ ] STEINS;GATE RE:BOOT · `01008BC024FDE000` · profile here

@@ -4,12 +4,18 @@ import android.content.Context
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
+import java.io.RandomAccessFile
 
 /**
- * The app's own log: everything the port and the tools say also lands in a file (files/nx2a/log.txt), so it can
- * be read off the phone (or shared out of Settings) when something went wrong.
+ * The app's own log: the things the app itself has to say (a step that failed, a file that could not be
+ * read) land in a file (files/nx2a/log.txt) in the app's own directory. The tools' own words do not go
+ * here - a build's output belongs to that build, a game's belongs to that game - so the file stays small
+ * enough to read and to carry along in a log bundle.
  */
 object AppLog {
+
+    /** The file's cap: past it only the tail is kept, the same cap the log bundle gives this file */
+    const val MAX_BYTES = 4L shl 20
 
     private var file: File? = null
     private var writer: BufferedWriter? = null
@@ -25,6 +31,7 @@ object AppLog {
         writer = null
         f.parentFile?.mkdirs()
         file = f
+        trim()
     }
 
     fun line(s: String) {
@@ -55,5 +62,26 @@ object AppLog {
         try { writer?.close() } catch (e: Exception) {}
         writer = null
         file?.delete()
+    }
+
+    /**
+     * Keeps the file within its cap: the tail is what happened lately, the head is what happened long
+     * ago. The cut may land in the middle of a line - that first half-line is dropped.
+     */
+    private fun trim() {
+        val f = file ?: return
+        try {
+            if (!f.isFile || f.length() <= MAX_BYTES) return
+            val kept = RandomAccessFile(f, "r").use { raf ->
+                raf.seek(f.length() - MAX_BYTES)
+                val bytes = ByteArray(MAX_BYTES.toInt())
+                raf.readFully(bytes)
+                val text = String(bytes, Charsets.UTF_8)
+                val cut = text.indexOf('\n')
+                if (cut >= 0) text.substring(cut + 1) else text
+            }
+            f.writeText(kept, Charsets.UTF_8)
+        } catch (e: Exception) {
+        }
     }
 }

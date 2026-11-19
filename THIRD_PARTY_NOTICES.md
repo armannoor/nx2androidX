@@ -31,6 +31,7 @@ describes what every one of them is, which version it is and where it is used.
 | Component | License | Where | License text |
 |---|---|---|---|
 | `nvn.h` (the NVN API declarations) | MIT, Copyright (c) 2020 h1k421 | `nxnative/dm/gfx/nvn/include/nvn.h` | in the file header |
+| The cheat engine (the Atmosphère dmnt cheat VM), ported from the sibling host's engine (the BananaNative repository) | MIT, Copyright (c) 2026 seedds | `nxnative/dm/host/hle_cheats.c` | in the file header |
 | The layout size algorithm ported from deko3d | zlib, Copyright (C) 2018-2020 fincs | `nxnative/dm/gfx/nvn/nvn_tex.c` | in the file header |
 | Two adaptations from MacNativeGames (MIT) | MIT | `nxnative/dm/gfx/nvn/nvn_mtl.m`, `nxnative/dm/gfx/tools/dmsh_xlate/Program.cs` | `nxnative/dm/third_party/macnativegames/LICENSE` |
 | `stb_image.h` (2.23), `stb_image_write.h` (1.13), `tinyexr.h` | MIT / public domain | `nxnative/dm/third_party/flip/tool/` | in each file's header |
@@ -55,7 +56,7 @@ with them.
 | `nx_extract` (the NSP reader) and LibHac 0.19.0 | GPL-3.0-or-later (its own code); LibHac is MIT | built from `nxnative/dm/tools/nx_extract/`, restored from NuGet | the repository's [LICENSE](LICENSE); the LibHac package is MIT |
 | The .NET runtime the phone app ships | MIT | the app's payload (`dotnet.pkg`) | the .NET SDK's own terms, fetched from Microsoft |
 
-## Fetched at run time, never shipped
+## Fetched at run time or imported by the player, never shipped
 
 | Component | License | Note |
 |---|---|---|
@@ -63,6 +64,7 @@ with them.
 | The Vulkan driver a player picks (Mesa Turnip and others) | their own | The player supplies the driver; the app never ships one it does not have the rights to. |
 | The Android NDK, the .NET SDK and platform-tools | their own terms (Apache-2.0, MIT, Apache-2.0) | Downloaded by the Setup tab from Google and Microsoft. |
 | The Python modules the phone app ships (lz4, capstone, pillow, fonttools, pyyaml, pycryptodome, backports.zstd) | permissive (BSD, MIT, Apache-2.0) | Fetched as wheels at build time into the APK's payload. |
+| The cheat files (the community's Atmosphère codes) | the cheat files are the community's own work | The app carries none of them. The player downloads them from the community libraries (the drawer's download row) or imports a zip (Settings → Environment → Cheats); the files come from switch-cheats-db, MyNXCheats and the Chinese community's collection, and our own repository (`zFitness/nx2a-cheats`) collects them with each file's author in the credit beside it. Nothing of them is in this repository or in the APK. |
 
 ## The game's own content
 

@@ -343,6 +343,14 @@ bash packaging/android-apk/build_apk.sh          # the payload and a debug APK
 bash packaging/android-apk/build_apk.sh release  # a release APK
 ```
 
+The debug APK that the build leaves behind is mostly empty space (the Android build keeps a hole in it for the
+next build to write into): a few hundred megabytes of nothing around a few tens of megabytes of app. Installing
+that over adb sends all of it. Repack it and the same app is a small file:
+
+```bash
+bash devtools/apk_repack.sh    # app-debug-small.apk: the same app, without the hole (about 19 MB)
+```
+
 The build needs the `gh` CLI (the rootfs comes from the private supply channel), Python 3.11+ and the Android SDK;
 [packaging/android-apk/README.md](../packaging/android-apk/README.md) has the parts and what the phone can and cannot
 do (no adb: the APK is installed with the system installer and the data pack is copied by the app).

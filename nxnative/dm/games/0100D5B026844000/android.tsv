@@ -1,0 +1,16 @@
+# Silver Pines on Android: the update (v65536, 1.0.1) is the version this profile carries - the update rebuilds every shader package, so one table cannot serve both versions (README.md).
+# Tested 2026-11-19 on the Xiaomi 23117RK66C (Redmi K70 Pro, Snapdragon 8 Gen 3, Adreno 750, Android 16), the game on the phone's own Vulkan driver:
+# the title (the Team17 logo, the animated VP8 background), a new save's opening (the difficulty select, the rain), the motel street at night (the neon sign, the lit
+# phone booth, the player, the fog) and the diner. 30 fps throughout: frame time p50 33.44 / p95 40.78 / max 54.69 ms, 0 of 300 frames dropped on screen, p99 49.88 ms,
+# footprint 1.99 GB flat, no shader compiled per frame once the pipelines are cached.
+# A second run: 732 s of play (12 min), 9 save commits, each an atomic clone + swap, 0 audio underruns in 238,000 device callbacks, the game held and its GPU work
+# drained cleanly when the app went to the background.
+# The one red log line: "[vk] the surface offers no format 0 for the window texture: its picture is lighter" - the window's swapchain falls back to a format the game
+# did not ask for on this device. It shows once, at the start, and nothing in the log follows it.
+# The update's file name needs the version tag: the upgrade NSP has to carry [v65536] in its name, or the pipeline leaves it out ("[RED] leaving out update NSPs
+# without a version tag") and the base game alone is packed.
+status	playable
+tested	v65536 Xiaomi 23117RK66C (Redmi K70 Pro, Snapdragon 8 Gen 3, Adreno 750, Android 16)
+package	org.nx2a.t0100d5b026844000
+orientation	landscape
+graphics	nvn

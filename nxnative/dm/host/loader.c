@@ -295,6 +295,81 @@ static void register_gates(module_t *m, const char *dir) {
     LOG("%s: gates %d patch_off %#llx keys %lu/%lu/%lu/%lu", m->name, ng, m->patch_off, g_key18, g_keytls, g_keytlr, g_keygate);
 }
 
+// The places a cheat must not write: the rewriter changed them or hooked them. It leaves three tables: sites.tsv (the
+// sites it rewrote or recognized: the svc gates, the branches it fixed, the jump tables, the spin waits, the windows it
+// filled), cuts.tsv (the words it cut out) and obs.tsv (the observation gates: the instruction whose place it took with
+// a jump to its own stub - those sites are not in sites.tsv, the rewriter keeps them apart). The stubs themselves live
+// in the patch area, which is refused as well. The list is sorted by offset so a lookup is a binary search
+static void avoid_add(module_t *m, uint32_t off, uint32_t len) {
+    if (!len) return;
+    dm_avoid_t *a = realloc(m->avoid, sizeof *a * (size_t)(m->n_avoid + 1));
+    if (!a) die("%s: out of memory for the avoid list", m->name);
+    m->avoid = a; a[m->n_avoid].off = off; a[m->n_avoid].len = len; m->n_avoid++;
+}
+static int avoid_cmp(const void *x, const void *y) {
+    uint32_t a = ((const dm_avoid_t *)x)->off, b = ((const dm_avoid_t *)y)->off;
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+static void read_avoid(module_t *m, const char *dir) {
+    char path[1024], line[512];
+    snprintf(path, sizeof path, "%s/%s.sites.tsv", dir, m->name);
+    FILE *f = fopen(path, "r");
+    if (f) {
+        while (fgets(line, sizeof line, f)) {
+            unsigned long off = 0; char kind[16] = "";
+            if (sscanf(line, "%lx %15s", &off, kind) != 2) continue;
+            if (!strcmp(kind, "W")) {   // a window it filled: start \t W \t end
+                unsigned long end = 0;
+                if (sscanf(line, "%*lx %*s %lx", &end) == 1 && end > off) avoid_add(m, (uint32_t)off, (uint32_t)(end - off));
+                continue;
+            }
+            avoid_add(m, (uint32_t)off, 4);
+            if (kind[0] == 'J' || kind[0] == 'T' || kind[0] == 'S') {
+                // the rest of the row: the addresses of the rewriter's own stubs and the back edges it rewrote
+                int col = 0; char *save = NULL;
+                for (char *tok = strtok_r(line, " \t\n", &save); tok; tok = strtok_r(NULL, " \t\n", &save)) {
+                    if (col++ < 2) continue;
+                    unsigned long a = strtoul(tok, NULL, 16);
+                    if (a) avoid_add(m, (uint32_t)a, 4);
+                }
+            }
+        }
+        fclose(f);
+    }
+    snprintf(path, sizeof path, "%s/%s.cuts.tsv", dir, m->name);
+    f = fopen(path, "r");
+    if (f) {
+        while (fgets(line, sizeof line, f)) {
+            unsigned long off = 0; char orig[64] = "";
+            if (sscanf(line, "%lx %63s", &off, orig) != 2) continue;
+            avoid_add(m, (uint32_t)off, (uint32_t)(strlen(orig) / 2));
+        }
+        fclose(f);
+    }
+    snprintf(path, sizeof path, "%s/%s.obs.tsv", dir, m->name);
+    f = fopen(path, "r");
+    if (f) {
+        while (fgets(line, sizeof line, f)) {   // offset 	 original id 	 original word 	 why
+            unsigned long off = 0;
+            if (sscanf(line, "%lx", &off) != 1) continue;
+            avoid_add(m, (uint32_t)off, 4);
+        }
+        fclose(f);
+    }
+    if (m->n_avoid) qsort(m->avoid, (size_t)m->n_avoid, sizeof *m->avoid, avoid_cmp);
+    LOG("%s: %d places a cheat must not write (the rewriter's own words and sites)", m->name, m->n_avoid);
+}
+
+// Does the range [off, off+len) touch a place the rewriter changed or hooked?
+int dm_module_avoided(module_t *m, uint64_t off, uint64_t len) {
+    int lo = 0, hi = m->n_avoid;
+    while (lo < hi) {   // the first range that ends after off
+        int mid = (lo + hi) / 2;
+        if ((uint64_t)m->avoid[mid].off + m->avoid[mid].len <= off) lo = mid + 1; else hi = mid;
+    }
+    return lo < m->n_avoid && (uint64_t)m->avoid[lo].off < off + len;
+}
+
 // DT_RELR (from SDK 20; all three modules of The Legend of Zelda: Breath of the Wild 1.9.0 have it): a compact table of relative relocations with the addend in the slot (*slot += base).
 // Each 8-byte entry: even = a new start offset (relocate it, the pointer moves to the next slot); odd = a bitmap whose bits 1-63 stand for the 63 slots after the pointer, which then moves on by 63 slots.
 // Without it main's GOT and vtables hold module offsets (main's RELA keeps only symbol relocations)
@@ -402,7 +477,7 @@ static void preload_nros(const char *dir) {
         module_t *m = &g_mod[g_nmod];
         strlcpy(m->name, name, sizeof m->name); m->nro = 1; m->nro_size = size;
         for (int k = 0; k < 32; k++) sscanf(hex + 2 * k, "%2hhx", &m->sha256[k]);
-        read_layout(m, dir); map_image(m, dir); parse_dynamic(m); register_gates(m, dir);
+        read_layout(m, dir); map_image(m, dir); parse_dynamic(m); register_gates(m, dir); read_avoid(m, dir);
         m->pristine_len = m->key_page_off - m->data_off;
         if (!(m->pristine = malloc(m->pristine_len))) die("%s: pristine data copy", m->name);
         memcpy(m->pristine, m->base + m->data_off, m->pristine_len); data += m->pristine_len;
@@ -552,6 +627,7 @@ static void map_image(module_t *m, const char *dir) {
     remap_at(m, base, x0, z0, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
     remap_at(m, base + z0, w, zw, TRUE, VM_PROT_READ | VM_PROT_WRITE);
     remap_at(m, base + m->patch_off, x1, z1, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+    m->code_end = z0;   // the whole text segment is the code here (and it is signed: it cannot be written at all)
     m->base = (uint8_t *)base; install_key_page(m);
 }
 #else
@@ -591,10 +667,44 @@ static void map_image(module_t *m, const char *dir) {
     memcpy(m->base, raw, sz); free(raw); install_key_page(m);
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
     if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
+    m->code_end = rx;   // the sealed code area: a cheat that writes there needs the host's help (the write bit, the instruction cache)
     uint64_t po = m->patch_off & ~0x3FFFull;
     if (mprotect(m->base + po, m->size - po, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
 }
 #endif
+
+// A cheat that writes the game's code: the host opens the write bit on the pages it needs, writes, and flushes the
+// instruction cache so the other cores run the new code. The execution bit never goes off: a thread that is executing
+// there would fault (SIGSEGV) and take the game down with it
+#if TARGET_OS_IPHONE
+// iOS: the image sits in the app's signed __TEXT and is remapped read+execute: it cannot be made writable, so a cheat
+// that writes the game's code is refused there
+int dm_module_code_write(module_t *m, uint64_t off, const void *src, size_t len) { (void)m; (void)off; (void)src; (void)len; return 0; }
+#else
+int dm_module_code_write(module_t *m, uint64_t off, const void *src, size_t len) {
+    size_t ps = (size_t)sysconf(_SC_PAGESIZE);
+    if (!ps) return 0;
+    uint64_t lo = off & ~(uint64_t)(ps - 1), hi = (off + len + ps - 1) & ~(uint64_t)(ps - 1);
+    if (hi - lo > m->size) return 0;
+    // the write bit goes on (the execution bit stays on the whole time), the write happens, and the pages go back to
+    // read+execute: the kernel flushes the instruction cache of a page whose protection changes (the other cores need
+    // that), and the sequence below flushes this core's
+    if (mprotect(m->base + lo, (size_t)(hi - lo), PROT_READ | PROT_WRITE | PROT_EXEC)) return 0;
+    memcpy(m->base + off, src, len);
+    __builtin___clear_cache((char *)m->base + lo, (char *)m->base + hi);
+    mprotect(m->base + lo, (size_t)(hi - lo), PROT_READ | PROT_EXEC);
+    return 1;
+}
+#endif
+
+// A write into a module: the code area needs the host's help (the write bit, the instruction cache), the rest is a
+// plain copy (the data area is writable). 1 = written, 0 = refused
+int dm_module_write(module_t *m, uint64_t off, const void *src, size_t len) {
+    if (!len || off + len > m->size) return 0;
+    if (off < m->code_end) return dm_module_code_write(m, off, src, len);
+    memcpy(m->base + off, src, len);
+    return 1;
+}
 
 void load_modules(const char *dir, const char **names, int n) {
     // Map everything and parse the symbol tables first, then relocate all at once (cross-module symbols must all be in place first)
@@ -609,6 +719,7 @@ void load_modules(const char *dir, const char **names, int n) {
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];
         t = now_ns(); map_image(m, dir); tm += now_ns() - t;   // On return the code area is already read-only+execute; from here on the loader only writes data
+        read_avoid(m, dir);   // the places a cheat must not write (the rewriter's own words and sites)
         if (!i) tsd_check();
         t = now_ns(); parse_dynamic(m); tp += now_ns() - t;
         t = now_ns(); register_gates(m, dir); tg += now_ns() - t;

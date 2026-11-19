@@ -53,6 +53,8 @@ import com.nx.android.app.AppActions
 import com.nx.android.core.ui.LocalAppLocale
 import com.nx.android.core.ui.components.ActionRow
 import com.nx.android.core.ui.components.ChoiceRow
+import com.nx.android.core.ui.components.CheatsHint
+import com.nx.android.core.ui.components.CheatsRow
 import com.nx.android.core.ui.components.CloseIcon
 import com.nx.android.core.ui.components.FirmwareHint
 import com.nx.android.core.ui.components.FirmwareRow
@@ -85,8 +87,8 @@ import java.io.File
  *
  * 设置的内容还是原来那些：环境的状态与准备/重置、prod.keys 的路径、Vulkan 驱动（装/删/
  * 下载/导入）、帧生成的 Lossless.dll、版本与检查更新、界面语言、重跑引导。每一项占一行
- * （见 `ui/components/SettingsRows.kt` 的行）。日志（看/分享/清空）不在这里：它在构建页
- * 的日志模块里（见 `ui/builds/BuildsScreen.kt`）。存储占用是第五个分区（见
+ * （见 `ui/components/SettingsRows.kt` 的行）。日志不在这里：构建那一次的在构建页该次任务
+ * 的详情里，游戏的在游戏详情抽屉的「分享日志」里。存储占用是第五个分区（见
  * `ui/settings/StorageSection.kt`）：它只报数字。
  *
  * 分区是外面给的状态（[section] 与 [onSelectSection]）：关掉这一页再打开，玩家上次看的
@@ -108,7 +110,6 @@ fun SettingsScreen(ob: OnboardingState, drivers: List<Driver>, driverRepository:
                    actions: AppActions, onRequest: (PickerRequest) -> Unit,
                    onDrivers: () -> Unit,
                    section: SettingsSection, onSelectSection: (SettingsSection) -> Unit,
-                   onDiagnosticLog: () -> Unit,
                    onClose: () -> Unit, navActive: Boolean = false) {
     val scroll = rememberPageScroll()
     LaunchedEffect(section) { scroll.scrollTo(0) }
@@ -150,7 +151,7 @@ fun SettingsScreen(ob: OnboardingState, drivers: List<Driver>, driverRepository:
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     when (section) {
-                        SettingsSection.ENVIRONMENT -> EnvironmentSection(ob, actions, onRequest, onDiagnosticLog)
+                        SettingsSection.ENVIRONMENT -> EnvironmentSection(ob, actions, onRequest)
                         SettingsSection.STORAGE -> StorageSection(storageViewModel)
                         SettingsSection.DRIVERS -> DriversSection(drivers, driverRepository, actions, onRequest, onDrivers)
                         SettingsSection.DISPLAY -> DisplaySection(actions, onRequest)
@@ -186,8 +187,7 @@ private fun RailItem(label: String, selected: Boolean, onClick: () -> Unit) {
  * 环境检查的入口是顶栏的胶囊（另有一处），这一行是设置页里改路径的地方。
  */
 @Composable
-private fun EnvironmentSection(ob: OnboardingState, actions: AppActions, onRequest: (PickerRequest) -> Unit,
-                               onDiagnosticLog: () -> Unit) {
+private fun EnvironmentSection(ob: OnboardingState, actions: AppActions, onRequest: (PickerRequest) -> Unit) {
     val locale = LocalAppLocale.current
     var confirmReset by remember { mutableStateOf(false) }
 
@@ -228,12 +228,17 @@ private fun EnvironmentSection(ob: OnboardingState, actions: AppActions, onReque
         onClear = { actions.onClearFirmware() },
     )
     FirmwareHint()
-    ActionRow(title = stringResource(R.string.settings_diagnostic_log), label = stringResource(R.string.builds_log_view),
-        onClick = onDiagnosticLog)
-    ActionRow(title = stringResource(R.string.settings_diagnostic_log), label = stringResource(R.string.common_share),
-        onClick = actions.onShareLog)
-    ActionRow(title = stringResource(R.string.settings_diagnostic_log), label = stringResource(R.string.common_delete),
-        onClick = actions.onClearLog)
+    // 金手指：玩家导入的一份（App 不带金手指：社区的 Atmosphère 文件由玩家自己导入）
+    CheatsRow(
+        games = actions.cheatGames(),
+        files = actions.cheatFiles(),
+        onImport = {
+            onRequest(PickerRequest(PickerMode.FILE, setOf("zip"), null, locale.str(R.string.cheats_pick),
+                onPicked = { f -> actions.onImportCheats(f) }))
+        },
+        onClear = { actions.onClearCheats() },
+    )
+    CheatsHint()
 
     if (confirmReset) {
         AlertDialog(

@@ -1,6 +1,6 @@
 # Silver Pines (`0100D5B026844000`)
 
-The base game, 1.0.0 (v0). Unity 6000.3.15f1 IL2CPP with the Universal Render Pipeline, FMOD, SDK 21.4.7, NVN. Modules `main`, `subsdk0` (NintendoSDK_movie) and `sdk`. Plays on the Mac at its own 30 fps. No IPA has been built; iOS is untested.
+The base game, 1.0.0 (v0), and its update, 1.0.1 (v65536), which is the version this profile carries (see [Android](#android)). Unity 6000.3.15f1 IL2CPP with the Universal Render Pipeline, FMOD, SDK 21.4.7, NVN. Modules `main`, `subsdk0` (NintendoSDK_movie) and `sdk`. Plays on the Mac at its own 30 fps. No IPA has been built; iOS is untested.
 
 ## What it needs
 
@@ -51,9 +51,18 @@ Build with `scripts/build_ipa_from_nsp.py <NSP folder> -k <prod.keys> --platform
 - [Integer entry points for integer colour outputs](../../../docs/reference/shaders.md#integer-entry-points-for-integer-colour-outputs): `main0_u` for URP's rendering-layers mask, in 9,720 pixel shaders.
 - [VP8 uses the same libvpx worker and output paths](../../../docs/reference/movies.md#vp8-uses-the-same-libvpx-worker-and-output-paths): the logo and the title background.
 
+## Android
+
+The version this profile carries is the update, **v65536 (1.0.1)**: the update rebuilds every shader package, so one table cannot serve both versions - of the 56,387 control-section keys the base game has, 55,517 point at another index in the update, and 47,976 of the 48,845 keys the two versions share sit at a different index in each. The tables beside this file are therefore the update's (66,226 control-section keys; the base game's 56,386 are kept in the v0 build row above, and packing the base game alone goes through a derived profile that splits its shaders again).
+
+Ported on Android 2026-11-19 (Xiaomi 23117RK66C, Snapdragon 8 Gen 3, Adreno 750, Android 16), the game on the phone's own Vulkan driver: 30 fps, 0 frames dropped on screen, the save commits atomically, no audio underruns. The details are in [`android.tsv`](android.tsv) beside this file.
+
+The update's file name has to carry the version tag (`[v65536]`): the internal version number is in the file name or nowhere cheap to read (the CNMT inside the meta NCA), so without the tag the pipeline leaves the update out and packs the base game alone.
+
 ## Open
 
-- `nvnTextureViewCompare` is unimplemented (`[RED]`, 60 to 75 calls in a short run); no visible effect has been found yet.
-- A long play session on this host with audio. No `smoke.tsv` route yet.
+- `nvnTextureViewCompare` is unimplemented (`[RED]`, 60 to 75 calls in a short run); no visible effect has been found yet. (On Android the same call appears 4 times a frame and draws correctly.)
+- A long play session on this host with audio. No `smoke.tsv` route yet. (On Android: 12 minutes of play with 9 save commits and no underruns.)
 - No prewarm list (`pso_manifest.tsv` is empty). A Mac app carries every pair's base in its archive; a run without one (`--platform mac`) builds them at its start.
 - iOS: no IPA built, untested.
+- The base game's own shader tables are not in the profile any more (the update's replaced them): a build that packs v0 splits its shaders again.

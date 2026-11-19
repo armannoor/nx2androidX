@@ -54,6 +54,7 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
@@ -64,7 +65,10 @@ import com.nx.android.core.ui.theme.NxPalette
 import com.nx.android.core.ui.theme.NxTheme
 import com.nx.android.data.AppLocale
 import com.nx.android.data.AppLog
+import com.nx.android.data.CheatRepo
+import com.nx.android.data.CheatSettings
 import com.nx.android.data.FrameGenSettings
+import com.nx.android.data.GameLog
 import com.nx.android.data.LosslessDll
 import com.nx.android.data.MotionKnobs
 import com.nx.android.data.MotionSettings
@@ -100,6 +104,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -170,6 +175,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var fgSettings: FrameGenSettings? = null
     private var rateSettings: RateSettings? = null
     private var motionSettings: MotionSettings? = null
+    private var cheatSettings: CheatSettings? = null
+    private var cheatStatus by mutableStateOf(CheatStatus())   // 金手指页的状态（文件在不在、出处、下载到哪了）
     private var padPlayers: PadPlayers? = null
     private var packPath: String? = null
     private var packTitleId: String? = null
@@ -307,6 +314,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 游戏进程自己的日志（App 的日志只在主进程里开过，这里也开一份：游戏出问题时看得到）
+        AppLog.init(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         currentInstance = WeakReference(this)
         packPath = intent.getStringExtra(EXTRA_PACK)
@@ -404,6 +413,9 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         prepareStep = ""
         prepareReason = ""
         prepareJob = prepareScope.launch {
+            // 每次进游戏，单条金手指都从关开始：上一局开过的不再自动生效。金手指是社区的代码，
+            // 有时会把游戏弄闪退——玩家闪退后重进要是还开着那条，就进不来了，也关不掉。
+            clearCheatToggles()
             val outcome = prepareRuntime(File(pack))
             withContext(Dispatchers.Main) {
                 if (outcome.ok) {
@@ -470,12 +482,29 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         return PrepareOutcome(ok = true, hostPath = runtimeStorage.hostOf(dir).absolutePath)
     }
 
-    /** 就地重建（porter 子进程，stdout 读进来就是 Loading 的进度）；成功返回 null，失败返回原因 */
+    /**
+     * 就地重建（porter 子进程，stdout 读进来就是 Loading 的进度）；成功返回 null，失败返回原因。
+     *
+     * 这一步的输出写进游戏自己的文件夹（rebuild.log，每次重建覆盖）：重建只发生在启动这一刻，
+     * 它属于这个游戏，游戏详情抽屉的日志包会把它一起带走。
+     */
     private suspend fun rebuild(pack: File): PrepareOutcome? {
+        val writer = try {
+            val log = File(pack, GameLog.REBUILD_FILE)
+            log.writeText("")
+            log.writer()
+        } catch (e: Exception) {
+            null
+        }
         val result = compiler.rebuild(pack.absolutePath) { line ->
             prepareStep = line
-            AppLog.line(line)
+            try {
+                writer?.write(line + "\n")
+                writer?.flush()
+            } catch (e: Exception) {
+            }
         }
+        try { writer?.close() } catch (e: Exception) {}
         if (!result.success) return PrepareOutcome(reason = result.reason)
         return null
     }
@@ -499,6 +528,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         fgSettings = titleId?.let { FrameGenSettings(PrefsStore(this), it) }
         rateSettings = titleId?.let { RateSettings(PrefsStore(this), it) }
         motionSettings = titleId?.let { MotionSettings(PrefsStore(this), it) }
+        cheatSettings = titleId?.let { CheatSettings(PrefsStore(this), it) }
         padPlayers = PadPlayers(this, PadPlayers.GLOBAL)   // 谁玩谁是全局一份（手柄中心与这里读写同一份）
         // 手柄的档案（每只手柄一份）与手柄的枚举：中心靠它
         loadPadProfiles()
@@ -515,7 +545,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         hudFahrenheit = prefs.bool(PrefsStore.HUD_TEMP_F, false)
         // 体感的两行也交给宿主：开不开（默认按设备有没有陀螺仪）与保留甩动方向（每个游戏各一份）
         val env = (fgSettings?.load()?.envLines(LosslessDll.ensure(this)?.absolutePath) ?: emptyArray()) +
-            (motionSettings?.load(hasGyroscope(this))?.envLines() ?: emptyArray())
+            (motionSettings?.load(hasGyroscope(this))?.envLines() ?: emptyArray()) +
+            (cheatSettings?.envLine(cheatsDir()) ?: emptyArray())
         if (!Native.start(pack, filesDir.path, titleId, resources.displayMetrics.densityDpi, env, this)) {
             endProcess()   // the save import asked to end: it happens at the next start
             return
@@ -530,6 +561,9 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         // 玩家选的帧率档位：start 之后才下发——包的 env.txt 在宿主启动时读过，晚 setenv 的那份留下来，
         // 玩家的选择盖过档案自己的 DM_FPS_PIN。没选过就不下发，档案的默认继续说话。
         rateSettings?.load()?.let { pin -> runCatching { Native.perfPinSet(pin.fps) } }
+        // 金手指页的状态：宿主起来了才知道这个 build 的编号（下载过的文件在不在、出处）
+        refreshCheatStatus()
+        awaitCheatBuild()
         watchControllers()
     }
 
@@ -544,7 +578,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         frame.addView(screenBlank, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         // 虚拟手柄绘制层（android-virtual-pad）：画在游戏画面之上、抽屉之下；不消费触点——命中与分流在宿主
         padView = PadView(this, PrefsStore(this), packPath?.let { File(it) }, packTitleId)
-        padView.onMenuTapped = { runOnUiThread { drawerOpen = !drawerOpen } }   // ☰ 按钮：App 开自己的抽屉
+        padView.onMenuTapped = { runOnUiThread { if (drawerOpen) drawerOpen = false else openDrawer() } }   // ☰ 按钮：App 开自己的抽屉
         frame.addView(padView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         // the drawer's layer: a ComposeView over the game's surface (the composition needs the activity's owners on the view)
         val compose = ComposeView(this)
@@ -611,6 +645,149 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         if (on) startExternal() else stopExternal()
     }
 
+    // ---- 金手指（宿主那边跑，App 只下发开关）----
+
+    /** App 自己的金手指目录（下载来的文件在这里：重打包不动它） */
+    private fun cheatsDir(): String? {
+        val tid = packTitleId ?: return null
+        val dir = CheatRepo.dir(filesDir, tid)
+        return if (dir.isDirectory) dir.absolutePath else null
+    }
+
+    /**
+     * 金手指的总开关：开着就让宿主加载这个 build 的金手指文件（运行时就能开关每一条），
+     * 关着就让宿主什么都不加载、不执行。开关本身按游戏记着（下次启动照旧）。
+     */
+    private fun setCheatsMaster(on: Boolean) {
+        val s = cheatSettings ?: return
+        s.setMaster(on)
+        val dir = cheatsDir()
+        if (on && dir != null) runCatching { Native.cheatsOpen(dir) } else runCatching { Native.cheatsClose() }
+    }
+
+    /** 开关一条金手指：宿主那边改状态并记下来（它自己知道这个 build 的编号与条目名） */
+    private fun setCheat(index: Int, on: Boolean) {
+        AppLog.line("cheats: cheat $index -> ${if (on) "on" else "off"}")
+        runCatching { Native.cheatsSet(index, on) }
+    }
+
+    /**
+     * 这个游戏的金手指文件在不在手机上（下载过没有）：宿主那边按 build 编号找文件，
+     * 所以这里也按它的编号找。
+     */
+    private fun cheatFile(): File? {
+        val tid = packTitleId ?: return null
+        val build = cheatBuild() ?: return null
+        return CheatRepo.file(CheatRepo.dir(filesDir, tid), build)
+    }
+
+    /**
+     * 这个 build 的编号（金手指文件按它命名）：宿主知道自己这个 build（它加载完模块就有了），
+     * 宿主还没加载完时先看数据包里的重写器表（同一份 BUILD_ID，不用等）。
+     */
+    private fun cheatBuild(): String? {
+        val fromHost = runCatching { Native.cheatsBuild() }.getOrNull()?.takeIf { it.length >= 16 }
+        return fromHost ?: packBuildId()
+    }
+
+    /**
+     * 数据包里重写器记的 main 的 build ID（fixups 表的头一行，和宿主读到的是同一个值）：
+     * 宿主还没加载完模块时，App 靠它知道这个游戏的版本。
+     */
+    private fun packBuildId(): String? {
+        val pack = packPath ?: return null
+        return CheatRepo.buildIdOf(File(pack))
+    }
+
+    /**
+     * 清掉这个 build 的单条金手指开关（它们记在下载来的文件旁边，宿主启动时读）：
+     * 单条开关不跨游戏次数——每次进游戏都从关开始。
+     *
+     * 在准备阶段做（宿主还没起，那时的编号从数据包的表里读）。
+     */
+    private fun clearCheatToggles() {
+        val tid = packTitleId ?: return
+        val build = packBuildId() ?: return
+        val dir = CheatRepo.dir(filesDir, tid)
+        if (!dir.isDirectory) return
+        if (CheatRepo.clearToggles(dir, build)) {
+            AppLog.line("cheats: this session starts with all cheats off ($build)")
+        }
+    }
+
+    /**
+     * 宿主在自己的线程里加载模块：它过一会儿才知道自己这个 build 的编号（金手指文件按它命名）。
+     * 数据包里的表已经能回答了（不必等），这一轮只是等宿主自己知道，好让两边的值对齐。
+     */
+    private fun awaitCheatBuild() {
+        lifecycleScope.launch {
+            for (i in 0 until 60) {
+                refreshCheatStatus()
+                if (runCatching { Native.cheatsBuild() }.getOrNull()?.length?.let { it >= 16 } == true) return@launch
+                // 老宿主没有金手指这个入口（调用即抛）：不用再等了
+                if (runCatching { Native.cheatsList() }.isFailure) return@launch
+                delay(500)
+            }
+        }
+    }
+
+    /** 抽屉打开：这时宿主该知道自己的 build 编号了（金手指页要拿它去库里挑文件） */
+    private fun openDrawer() {
+        AppLog.line("cheats: the drawer opened")
+        drawerOpen = true
+        refreshCheatStatus()
+    }
+
+    /** 金手指页的状态：文件在不在、出处是什么（进游戏时读一遍，之后下载完再读） */
+    private fun refreshCheatStatus() {
+        var downloaded = false
+        var credit = ""
+        val file = cheatFile()
+        if (file != null) {
+            downloaded = file.isFile
+            val note = CheatRepo.creditFile(file.parentFile, file.name.removeSuffix(".txt"))
+            if (note.isFile) credit = runCatching { note.readText() }.getOrDefault("").trim()
+        }
+        // 能不能下载：得有这个游戏的 title ID（库的地址用它）与它这个 build 的编号（挑哪一节用它）
+        val canDownload = packTitleId != null && cheatBuild() != null
+        cheatStatus = cheatStatus.copy(downloaded = downloaded, credit = credit, canDownload = canDownload)
+    }
+
+    /**
+     * 从社区库下载这个 build 的金手指（要联网）：文件下到 App 自己的目录里，
+     * 下好了让宿主把新文件加载起来（总开关开着才跑）。
+     */
+    private fun downloadCheats() {
+        val tid = packTitleId ?: return
+        val build = cheatBuild()
+        if (build == null) { cheatStatus = cheatStatus.copy(download = CheatDownload.NO_BUILD); return }
+        if (cheatStatus.download == CheatDownload.DOWNLOADING) return
+        cheatStatus = cheatStatus.copy(download = CheatDownload.DOWNLOADING)
+        AppLog.line("cheats: fetching the library's file of $build for $tid")
+        lifecycleScope.launch {
+            val dir = CheatRepo.dir(filesDir, tid)
+            val result = withContext(Dispatchers.IO) { CheatRepo.download(tid, build, dir) }
+            result.fold(
+                onSuccess = {
+                    val credit = runCatching { CheatRepo.creditFile(dir, build).readText() }.getOrDefault("")
+                    AppLog.line("cheats: $build downloaded (${it.length()} bytes) from $credit")
+                },
+                onFailure = { AppLog.line("[RED] cheats: the download failed: ${it.message}") },
+            )
+            if (result.isSuccess && cheatSettings?.master() == true) {
+                runCatching { Native.cheatsOpen(dir.absolutePath) }
+            }
+            refreshCheatStatus()
+            val state = if (result.isSuccess) CheatDownload.DONE
+            else when (result.exceptionOrNull()) {
+                is CheatRepo.NoSuchBuild -> CheatDownload.NO_BUILD
+                is CheatRepo.NothingUsable -> CheatDownload.NO_USABLE
+                else -> CheatDownload.FAILED
+            }
+            cheatStatus = cheatStatus.copy(download = state)
+        }
+    }
+
     /**
      * The default driver: the app's built-in one (the driver it ships), written into the pack when the player
      * never picked a driver for this game. The row is written once — a driver the player picked (the device's own
@@ -659,7 +836,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     fun onHostNotice(what: Int) {
         runOnUiThread {
             when (what) {
-                1 -> drawerOpen = !drawerOpen
+                1 -> if (drawerOpen) drawerOpen = false else openDrawer()
                 2 -> drawerOpen = false
                 3 -> textReq = readTextRequest()
             }
@@ -728,7 +905,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
             GameDrawer(
                 paused = paused,
                 open = drawerOpen,
-                onOpenChange = { drawerOpen = it },
+                onOpenChange = { if (it) openDrawer() else drawerOpen = false },
                 settings = fgSettings,
                 onRatePin = { saveRatePin(it) },
                 motion = { motionState() },
@@ -763,6 +940,13 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 externalOn = { externalOn },
                 externalAvailable = { externalScreenAttached() },
                 onExternal = { setExternal(it) },
+                // 金手指：总开关与每条的开关（宿主那边加载、跑、记）
+                cheatsMaster = { cheatSettings?.master() == true },
+                onCheatsMaster = { setCheatsMaster(it) },
+                onCheatToggle = { i, on -> setCheat(i, on) },
+                // 金手指文件：社区库下载的（那一行）或玩家导入的；这一页只显示状态
+                cheatStatus = { cheatStatus },
+                onCheatsDownload = { downloadCheats() },
                 // 暂停/继续：游戏原地停/起，抽屉不收——玩家可以一边停着一边调设置
                 onPauseGame = {
                     paused = true
@@ -848,7 +1032,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                     editorOpen -> closeEditor()   // 编辑器：Back 是收工（改动早就存好了）
                     drawerOpen -> drawerOpen = false
                     hostPanel -> Native.key(e.deviceId, e.source, e.keyCode, e.action, e.metaState, e.repeatCount)   // 宿主的面板在后退一步
-                    else -> drawerOpen = true
+                    else -> openDrawer()
                 }
             }
             return true   // Back 只在宿主的面板开着时交给宿主

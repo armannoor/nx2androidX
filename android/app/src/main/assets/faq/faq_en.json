@@ -1,5 +1,15 @@
 [
   {
+    "group": "hot",
+    "title": "The build dies",
+    "items": [
+      {
+        "q": "The app disappears mid-build and the history says \"Interrupted\" - what do I do?",
+        "a": "A build runs the CPU flat out for many minutes - the shader stage is the heaviest. When the app disappears mid-build, the system killed it, for one of three reasons:\n\n· The battery manager clears \"abnormal power drain\" - a heavy app is force-stopped, on MIUI even in the foreground;\n· Not enough free memory - a build peaks at several GB, and games or video apps left in the background push it out;\n· Low battery - below a threshold the system throttles the CPU and clears backgrounds on its own, so builds die earlier and run slower.\n\nTo make a build succeed (in order):\n1. Clear the memory: swipe away games, video players and other heavy apps before you start;\n2. Keep the battery healthy: build plugged in, power-saver modes off, and do not start below 20%;\n3. Set nx2androidX's battery policy to \"No restrictions\" (MIUI: Battery → App smart battery; Huawei/Honor: App launch management → Manual; Samsung: out of the \"Sleeping apps\" list);\n4. In the phone manager / Security app: allow background runs and autostart;\n5. Lock the app's card in the recents screen;\n6. Keep the screen on and the app in front while it builds.\n\nIf it dies anyway, just start again: every finished stage is cached, it catches up in seconds."
+      }
+    ]
+  },
+  {
     "group": "prepare",
     "title": "Getting ready",
     "items": [
@@ -77,7 +87,11 @@
       },
       {
         "q": "What is coming next?",
-        "a": "On the list: screen resolution, cheats, mods, online play and upscaling. They are all still being worked on - please wait for a later release. Everything that works today is written down in the other entries on this page."
+        "a": "On the list: screen resolution, mods, online play and upscaling. They are all still being worked on - please wait for a later release. Everything that works today is written down in the other entries on this page."
+      },
+      {
+        "q": "How do I use cheats?",
+        "a": "In the game, open the drawer and go to the Cheats tab: turn on \"Use cheats\" and tap \"Download from the library\". The cheat files are not in the app: they are fetched from the community library (switch-cheats-db) for this build of the game, which needs the network. Once they are here the cheats are listed, each with its own switch, effective at once; if the library has no file for your version, the row says so. The file stays in the app's own folder, so a rebuilt data pack does not lose it. A cheat can change values in the game's memory and patch the game's own code; the ones that would touch a word the rewriter changed (writing there would break the game) are marked with the reason they cannot run."
       }
     ]
   }

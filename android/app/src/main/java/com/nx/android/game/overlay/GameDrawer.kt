@@ -39,6 +39,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -91,12 +93,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nx.android.R
+import com.nx.android.data.AppLog
 import com.nx.android.data.FrameGenKnobs
 import com.nx.android.data.FrameGenSettings
 import com.nx.android.data.LosslessDll
 import com.nx.android.data.RatePin
 import com.nx.android.game.hud.HudField
+import com.nx.android.game.Cheat
+import com.nx.android.game.CheatDownload
+import com.nx.android.game.CheatStatus
 import com.nx.android.game.Native
+import com.nx.android.game.parseCheats
 import com.nx.android.game.input.PadStyle
 import com.nx.android.input.GamepadScan
 import com.nx.android.input.PadAssignment
@@ -115,6 +122,7 @@ enum class DrawerTab(@StringRes val label: Int, val icon: ImageVector) {
     CONTROLS(R.string.drawer_tab_controls, Icons.Filled.SportsEsports),
     AUDIO(R.string.drawer_tab_audio, Icons.AutoMirrored.Filled.VolumeUp),
     PLAYERS(R.string.drawer_tab_players, Icons.Filled.Groups),
+    CHEATS(R.string.drawer_tab_cheats, Icons.Filled.Extension),
 }
 
 /**
@@ -164,6 +172,11 @@ fun GameDrawer(
     externalOn: () -> Boolean,
     externalAvailable: () -> Boolean,
     onExternal: (Boolean) -> Unit,
+    cheatsMaster: () -> Boolean,
+    onCheatsMaster: (Boolean) -> Unit,
+    onCheatToggle: (Int, Boolean) -> Unit,
+    cheatStatus: () -> CheatStatus,
+    onCheatsDownload: () -> Unit,
     onPauseGame: () -> Unit,
     onResumeGame: () -> Unit,
     onExit: () -> Unit,
@@ -197,6 +210,14 @@ fun GameDrawer(
                 var pads by remember { mutableStateOf(emptyList<GamepadScan.Info>()) }
                 // 外接屏：插上拔下也要看得见（开着这个模式却没有屏，要告诉玩家）
                 var extAvailable by remember { mutableStateOf(externalAvailable()) }
+                // 金手指：老宿主没有这个入口（调用即抛 UnsatisfiedLinkError）——那一页给一句话说明，别留一个空页
+                val cheatsGet = remember { runCatching { Native.cheatsList() } }
+                val cheatsSupported = cheatsGet.isSuccess
+                // 总开关的样子自己记着：宿主那边的开关改了以后这一页未必会重画（金手指一条都没有时列表不变），
+                // 玩家点了开关却看见它没动，就白按了
+                var cheatsMasterOn by remember { mutableStateOf(cheatsMaster()) }
+                // 宿主那边可能自己关掉一条（比如它要改游戏的代码，跑一次就关了），所以开着抽屉时每次轮询都读一遍
+                var cheatList by remember { mutableStateOf(if (cheatsSupported) parseCheats(cheatsGet.getOrDefault("")) else emptyList()) }
                 var tick by remember { mutableIntStateOf(0) }
                 LaunchedEffect(open) {   // 打开期间 2 Hz 轮询宿主的状态串与帧率档位
                     while (open) {
@@ -211,6 +232,11 @@ fun GameDrawer(
                         runCatching { pads = pads() }
                         // 外接屏：每次都读（插上显示器要立刻看得见）
                         if (externalSupported()) runCatching { extAvailable = externalAvailable() }
+                        // 金手指：每次都读（宿主可能自己关掉了一条）
+                        if (cheatsSupported) {
+                            runCatching { cheatList = parseCheats(Native.cheatsList()) }
+                            cheatsMasterOn = cheatsMaster()
+                        }
                         tick++
                         delay(500)
                     }
@@ -228,7 +254,7 @@ fun GameDrawer(
                         Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp)) {
                             var tab by remember { mutableIntStateOf(0) }
                             // 顶部的页签行：图标在上、文字在下，选中项下面一条滑动的短杠
-                            DrawerTabBar(tab) { tab = it }
+                            DrawerTabBar(tab) { tab = it; AppLog.line("drawer: the tab -> ${DrawerTab.entries[it].name}") }
                             Spacer(Modifier.height(10.dp))
                             // 内容页：滚动，占据动作行之上的全部空间（动作行在本列底部，不可能被挤出）
                             Column(
@@ -261,6 +287,10 @@ fun GameDrawer(
                                         onPick = { id -> audioId = id; Native.audioSet(id) })
                                     // 玩家页：谁玩谁（这个游戏里哪只手柄是几号玩家）
                                     DrawerTab.PLAYERS -> PlayerRows(pads, players, onPlayers)
+                                    // 金手指页：这个游戏的金手指与它们的开关（宿主那边跑，App 只显示与下发）
+                                    DrawerTab.CHEATS -> CheatRows(cheatList, cheatsMasterOn, cheatsSupported,
+                                        cheatStatus(), { on -> cheatsMasterOn = on; onCheatsMaster(on) },
+                                        onCheatToggle, onCheatsDownload)
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
@@ -440,25 +470,29 @@ internal fun ToggleRow(
     }
 }
 
-/** 一行：图标 + 标题 + 小字提示 + 展开的箭头（点了去某个地方） */
+/** 一行：图标 + 标题 + 小字提示 + 展开的箭头（点了去某个地方）。enabled=false 时灰着，按不动 */
 @Composable
 internal fun ActionRow(
     icon: ImageVector, title: String, hint: String? = null,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().clickable(enabled = enabled) { onClick() }.padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        val tint = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
+        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+        Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(title, style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface else tint)
             if (hint != null) {
-                Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(hint, style = MaterialTheme.typography.bodySmall, color = tint)
             }
         }
-        Icon(Icons.Filled.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        Icon(Icons.Filled.ChevronRight, null, tint = tint, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -682,6 +716,75 @@ private fun PlayerRows(
         }
     }
     HintRow(stringResource(R.string.drawer_players_note))
+}
+
+/**
+ * 金手指页：总开关、这个游戏的金手指，以及把它们弄到手的那一行。
+ *
+ * 总开关关着的时候宿主不加载也不执行任何金手指（这一页不列条目）；打开后每条一个开关。
+ * 不能跑的那条（要改游戏的代码）开关是灰的，小字写着原因。
+ *
+ * 金手指文件不在 App 里，两条路都有：抽屉里从社区库下载（那一行），或者玩家在设置里导入一个 zip
+ * （设置 → 环境 → 金手指）。哪一条都行，提示一直写着（总开关开不开都看得见）。
+ */
+@Composable
+private fun CheatRows(
+    cheats: List<Cheat>,
+    master: Boolean,
+    supported: Boolean,
+    status: CheatStatus,
+    onMaster: (Boolean) -> Unit,
+    onToggle: (Int, Boolean) -> Unit,
+    onDownload: () -> Unit,
+) {
+    if (!supported) {
+        HintRow(stringResource(R.string.drawer_cheats_unsupported))
+        return
+    }
+    GroupLabel(stringResource(R.string.drawer_group_cheats))
+    ToggleRow(Icons.Filled.Extension, stringResource(R.string.drawer_cheats_master),
+        stringResource(R.string.drawer_cheats_master_hint), master, onChange = onMaster)
+    // 怎么把金手指弄到手：一直写着（总开关关着的时候玩家也得知道去哪儿导入）
+    HintRow(stringResource(R.string.drawer_cheats_get_hint))
+    if (!master) {
+        HintRow(stringResource(R.string.drawer_cheats_off_hint))
+        return
+    }
+    if (!status.canDownload) {
+        // 不知道这个游戏的编号：下不了（这一页只说明没有金手指）
+        HintRow(stringResource(R.string.drawer_cheats_none))
+        return
+    }
+    // 下载这一行：社区库里按 build 编号放文件（每个 build 一份）
+    val downloading = status.download == CheatDownload.DOWNLOADING
+    val title = when {
+        downloading -> stringResource(R.string.drawer_cheats_downloading)
+        status.download == CheatDownload.NO_BUILD -> stringResource(R.string.drawer_cheats_no_build)
+        status.download == CheatDownload.NO_USABLE -> stringResource(R.string.drawer_cheats_no_usable)
+        status.download == CheatDownload.FAILED -> stringResource(R.string.drawer_cheats_retry)
+        status.downloaded -> stringResource(R.string.drawer_cheats_redownload)
+        else -> stringResource(R.string.drawer_cheats_download)
+    }
+    val hint = when {
+        status.download == CheatDownload.NO_BUILD -> stringResource(R.string.drawer_cheats_no_build_hint)
+        status.download == CheatDownload.NO_USABLE -> stringResource(R.string.drawer_cheats_no_usable_hint)
+        status.download == CheatDownload.FAILED -> stringResource(R.string.drawer_cheats_failed_hint)
+        else -> stringResource(R.string.drawer_cheats_download_hint)
+    }
+    ActionRow(Icons.Filled.Download, title, hint, enabled = !downloading) { onDownload() }
+    if (cheats.isEmpty()) {
+        // 文件在，但没有条目（或者还没下）：下好了才有东西列
+        if (status.downloaded) HintRow(stringResource(R.string.drawer_cheats_none))
+        return
+    }
+    for ((i, c) in cheats.withIndex()) {
+        ToggleRow(Icons.Filled.Tune, c.name, if (c.broken) c.why else null, c.on, enabled = !c.broken) {
+            onToggle(i, it)
+        }
+    }
+    if (status.credit.isNotEmpty()) {
+        HintRow(stringResource(R.string.drawer_cheats_credit, status.credit))
+    }
 }
 
 /**

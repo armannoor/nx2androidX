@@ -13,9 +13,10 @@ import kotlinx.coroutines.launch
 /**
  * The builds page's reading of what the selected game file holds.
  *
- * One read per file: the answer is kept, so coming back to the same file does not start the guest again. A read
- * that arrives after the player picked another file is dropped — that answer belongs to the file it was asked
- * about.
+ * Every read inspects the file again: the game folder can change between two rounds (an update NSP
+ * renamed in, another one taken out), and a kept answer would show the player a game folder that no
+ * longer exists. A read that arrives after the player picked another file is dropped — that answer
+ * belongs to the file it was asked about.
  */
 class GameInfoReader(
     private val inspector: GameInspector,
@@ -30,33 +31,24 @@ class GameInfoReader(
     var reading by mutableStateOf(false)
         private set
 
-    /** Counts every finished read, the cached ones included: the page reacts to each of them. */
+    /** Counts every finished read: the page reacts to each of them. */
     var reads by mutableStateOf(0)
         private set
 
-    private val cache = HashMap<String, GameInfo>()
     private var job: Job? = null
 
     @Volatile private var current: String = ""
 
-    /** Reads the file (or takes the answer from the cache). */
+    /** Reads the file. */
     fun read(file: File, keys: String) {
         val path = file.absolutePath
         current = path
         job?.cancel()
-        val cached = cache[path]
-        if (cached != null) {
-            info = cached
-            reading = false
-            reads++
-            return
-        }
         info = null
         reading = true
         job = scope.launch {
             val result = runCatching { inspector.inspect(path, keys) }.getOrNull()
             if (path != current) return@launch   // the player picked another file: this answer is late
-            if (result != null) cache[path] = result
             info = result
             reading = false
             reads++

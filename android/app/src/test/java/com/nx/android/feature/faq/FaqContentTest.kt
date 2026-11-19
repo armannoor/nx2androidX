@@ -15,16 +15,24 @@ import java.io.File
 class FaqContentTest {
 
     @Test
-    fun threeGroupsInOrder() {
-        val groups = FaqContent.parse(zhJson())
-        assertEquals(3, groups.size)
-        assertEquals(listOf("prepare", "trouble", "other"), groups.map { it.key })
+    fun theGroupsAreInTheSameOrderInBothLanguages() {
+        val zh = FaqContent.parse(zhJson())
+        val en = FaqContent.parse(enJson())
+        assertTrue(zh.isNotEmpty())
+        // the keys are stable, so the same key must not appear twice
+        assertEquals(zh.size, zh.map { it.key }.distinct().size)
+        // the groups come and go with the content: what must hold is that both files agree on them
+        assertEquals(zh.map { it.key }, en.map { it.key })
     }
 
     @Test
-    fun sixteenQuestionsInAll() {
-        assertEquals(16, FaqContent.parse(zhJson()).sumOf { it.entries.size })
-        assertEquals(16, FaqContent.parse(enJson()).sumOf { it.entries.size })
+    fun everyGroupHasQuestions() {
+        // the count comes and goes with the content: what must not happen is a group without a question
+        for (text in listOf(zhJson(), enJson())) {
+            for (group in FaqContent.parse(text)) {
+                assertTrue("group ${group.key} has no question", group.entries.isNotEmpty())
+            }
+        }
     }
 
     @Test

@@ -11,9 +11,12 @@ ipa	SilverPines.ipa
 app_category	public.app-category.adventure-games
 
 # ---- Versions ----
+# The base game (v0, 1.0.0) and its update (v65536, 1.0.1). The shader tables beside this file are the update's: the update rebuilds every
+# shader package (55,517 of the 56,387 control-section keys point at another index), so one table cannot serve both versions (README.md)
 build	v0	1.0.0	main=91046036f8850de3ec306056fcc6ba12	subsdk0=92a5f1a1e8d50e4d05b2212f564bf226	sdk=ab3835b2a37b1916e296f27e82dd4e36
-package	v0
-shader_versions	v0
+build	v65536	1.0.1	main=96c4cca112fb0b0233f0f61a68fbd2c2	subsdk0=92a5f1a1e8d50e4d05b2212f564bf226	sdk=ab3835b2a37b1916e296f27e82dd4e36
+package	v65536
+shader_versions	v65536
 
 # ---- Files ----
 # every module main imports from

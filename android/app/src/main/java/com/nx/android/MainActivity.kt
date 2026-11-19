@@ -46,6 +46,7 @@ import com.nx.android.appstate.PortState
 import com.nx.android.data.AppLocale
 import com.nx.android.data.AppLog
 import com.nx.android.data.AppVersion
+import com.nx.android.data.CheatRepo
 import com.nx.android.data.LogBundle
 import com.nx.android.data.Player
 import com.nx.android.data.PrefsStore
@@ -121,6 +122,9 @@ class MainActivity : ComponentActivity() {
 
     /** 手柄中心（首页顶栏的入口）：档案跟游戏共用同一个文件 */
     private val padController by lazy { PadCenterController.forContext(this) }
+
+    /** 导入或清除了金手指：这个数一变，设置页那一行跟着重画 */
+    private var cheatsChanged by mutableStateOf(0)
 
     /** 首页的手柄中心开着吗（开着的时候手柄的键不进库页，只进示波与抓键）。
      *  这一份是**唯一**的那份：分发层（dispatchKeyEvent）与页面读的都是它。 */
@@ -213,6 +217,11 @@ class MainActivity : ComponentActivity() {
         // 名字取自 envCheck 那份状态：导入或清除之后，这一行立刻跟着变（普通读 prefs 不会刷新界面）
         firmware = { envCheck.firmwareName },
         onImportFirmware = { zip -> importFirmware(zip) },
+        // 金手指：社区的 Atmosphère 文件，玩家导入一个 zip（App 不带）
+        cheatGames = { cheatGames() },
+        cheatFiles = { cheatFiles() },
+        onImportCheats = { zip -> importCheats(zip) },
+        onClearCheats = { clearCheats() },
         // 游戏档案：玩家导入的档案包（App 不带档案），导入的是 App 私有目录里的那一份
         onImportProfiles = { zip -> importProfiles(zip) },
         onClearFirmware = {
@@ -223,19 +232,6 @@ class MainActivity : ComponentActivity() {
         // 文件管理器能不能看见 App 的私有目录（运行时、存档、日志）。文档提供器自己读这份设置。
         fileProvider = { prefs.bool(PrefsStore.FILE_PROVIDER, true) },
         onSetFileProvider = { on -> prefs.put(PrefsStore.FILE_PROVIDER, on) },
-        onShareLog = {
-            lifecycleScope.launch {
-                val zip = withContext(Dispatchers.IO) {
-                    LogBundle.build(this@MainActivity, paths.work, buildSessions.logFiles(), bundleDir())
-                }
-                shareBundle(zip, R.string.main_share_log, R.string.main_log_empty)
-            }
-        },
-        onClearLog = {
-            AppLog.clear()
-            toast(locale.str(R.string.main_log_cleared))
-        },
-        readLog = { AppLog.text(2000) },
         onShareBuildLog = { id ->
             lifecycleScope.launch {
                 val session = port.history.firstOrNull { it.id == id }
@@ -288,10 +284,52 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 导入金手指包：社区的 Atmosphère 文件（App 不带，玩家从社区仓库或论坛上拿 zip）。
+     * 解到 App 自己的目录（files/cheats/<title ID>/<build ID>.txt），抽屉里那个游戏就有金手指了。
+     * 分辨率类的条目不要（App 有自己的渲染比例），只有分辨率的文件不写。
+     */
+    private fun importCheats(zip: File) {
+        if (!zip.isFile) { toast(locale.str(R.string.cheats_import_failed, zip.name)); return }
+        lifecycleScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching { CheatRepo.importZip(zip, filesDir) }
+            }
+            r.onSuccess { s ->
+                AppLog.line("cheats: imported ${s.files} file(s) for ${s.gameCount} game(s) from ${zip.name}")
+                toast(locale.str(R.string.cheats_imported_toast, s.gameCount, s.files))
+                cheatsChanged++
+            }.onFailure { e ->
+                AppLog.line("[RED] cheats: the import failed: ${e.message}")
+                toast(locale.str(R.string.cheats_import_failed, e.message ?: zip.name))
+            }
+        }
+    }
+
+    /** 忘掉导入的金手指：App 私有目录里的那一份删掉（游戏里的那些也不再有） */
+    private fun clearCheats() {
+        CheatRepo.root(filesDir).deleteRecursively()
+        AppLog.line("cheats: the imported cheats were removed")
+        toast(locale.str(R.string.cheats_cleared))
+        cheatsChanged++
+    }
+
+    /** 导入过的金手指：几个游戏、几个文件（设置页那一行） */
+    private fun cheatGames(): Int {
+        cheatsChanged            // 导入或清除之后这一行要重画
+        return CheatRepo.root(filesDir).listFiles()?.count { it.isDirectory } ?: 0
+    }
+
+    private fun cheatFiles(): Int {
+        cheatsChanged
+        return CheatRepo.root(filesDir).listFiles()?.sumOf { dir ->
+            dir.listFiles()?.count { it.name.endsWith(".txt") } ?: 0
+        } ?: 0
+    }
+
+    /**
      * 导入游戏档案包：App 不带档案（几百 MB 的着色器表），玩家导入一份，移植器在自己的目录里找到它们。
      * 导入是移植器做的（它知道档案包的格式），App 只把包放进自己的目录（客机进程看不见手机的存储）。
-     */
-    private fun importProfiles(zip: File) {
+     */    private fun importProfiles(zip: File) {
         if (!zip.isFile) { toast(locale.str(R.string.profiles_import_failed, zip.name)); return }
         envCheck.importProfiles(zip) { ok, message ->
             if (ok) toast(locale.str(R.string.profiles_imported_toast, envCheck.profilesCount))

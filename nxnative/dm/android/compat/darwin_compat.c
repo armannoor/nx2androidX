@@ -47,6 +47,14 @@ kern_return_t vm_read_overwrite(task_t task, vm_address_t addr, vm_size_t size, 
     if (outsize) *outsize = (vm_size_t)n;
     return (vm_size_t)n == size ? KERN_SUCCESS : KERN_INVALID_ADDRESS;
 }
+// The counterpart of vm_read_overwrite: the kernel copies into the page tables and reports EFAULT for a page that is not mapped writable, where a memcpy would take the signal
+kern_return_t vm_write(task_t task, vm_address_t addr, vm_size_t size, vm_offset_t data) {
+    (void)task;
+    struct iovec l = {(void *)(uintptr_t)data, size}, r = {(void *)addr, size};
+    ssize_t n = process_vm_writev(getpid(), &l, 1, &r, 1, 0);
+    if (n < 0) return KERN_INVALID_ADDRESS;
+    return (vm_size_t)n == size ? KERN_SUCCESS : KERN_INVALID_ADDRESS;
+}
 kern_return_t vm_allocate(task_t task, vm_address_t *addr, vm_size_t size, int flags) {
     (void)task;
     void *hint = (flags & VM_FLAGS_ANYWHERE) ? NULL : (void *)*addr;

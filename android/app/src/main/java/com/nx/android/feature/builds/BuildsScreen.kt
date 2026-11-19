@@ -51,7 +51,6 @@ import androidx.compose.ui.unit.sp
 import com.nx.android.R
 import com.nx.android.appstate.LibraryState
 import com.nx.android.appstate.PortState
-import com.nx.android.data.AppLog
 import com.nx.android.domain.ALIAS_AUTO
 import com.nx.android.domain.GameFile
 import com.nx.android.domain.GameIdentity
@@ -527,38 +526,6 @@ private fun ProgressCard(port: BuildsUiState, actions: AppActions) {
         }
         if (port.phase == PortPhase.RUNNING) {
             QuietButton(stringResource(R.string.builds_cancel_port), { actions.onCancelPort() }, modifier = Modifier.fillMaxWidth())
-        }
-    }
-}
-
-// ---- 日志模块（尾部 + 展开 + 查看/分享/清空） -----------------------------------------------
-
-/**
- * 日志模块：工具说过的话的尾部，加上把它带走的三个动作——查看全部、分享日志、清空日志。
- *
- * 屏幕上给的是内存里的那一份（移植进行中它最新）；App 重启之后内存里空了，就退回文件里那一份
- * （上一轮留下的）。「查看全部」与「分享日志」给的始终是文件里的内容，不只是屏幕上这些行。
- */
-@Composable
-private fun LogCard(port: BuildsUiState, actions: AppActions, onView: () -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    // 内存里没有输出时（App 重启之后），读文件里那一份
-    var fileTail by remember { mutableStateOf(listOf<String>()) }
-    LaunchedEffect(port.log.isEmpty()) {
-        if (port.log.isEmpty()) fileTail = AppLog.text(400).lines()
-    }
-    val lines = if (port.log.isNotEmpty()) port.log else fileTail
-    Section(stringResource(R.string.common_log)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(R.string.builds_log_hint), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-            QuietButton(if (open) stringResource(R.string.builds_collapse) else stringResource(R.string.builds_expand), { open = !open })
-        }
-        LogTail(lines, if (open) 320.dp else 160.dp, if (open) 200 else 30)
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = onView) { Text(stringResource(R.string.builds_log_view)) }
-            TextButton(onClick = { actions.onShareLog() }) { Text(stringResource(R.string.builds_log_share)) }
-            // 清空：文件与屏幕上这份一起清（动作里清的是内存那份，这里清的是文件那份的读出）
-            TextButton(onClick = { actions.onClearLog(); fileTail = listOf() }) { Text(stringResource(R.string.builds_log_clear)) }
         }
     }
 }

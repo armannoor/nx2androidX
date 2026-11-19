@@ -188,6 +188,11 @@ class PortState @Inject constructor(
         buildId = ""
     }
 
+    /**
+     * One line of the port's output: with a task record it belongs to that task's log, without one it is
+     * the app's own line - the app's log keeps the app's own things, and a line said before the record
+     * existed is one of them.
+     */
     fun say(s: String) {
         log = (log + s).takeLast(400)
         if (buildId.isNotEmpty()) sessions.append(buildId, s) else AppLog.line(s)

@@ -334,10 +334,15 @@ class EnvCheckState @Inject constructor(
         return dst
     }
 
-    /** The porter does the import: it knows the package's layout, and its own lines say what went wrong */
+    /**
+     * The porter does the import: it knows the package's layout, and its own lines say what went wrong.
+     *
+     * Its output stays in the buffer: the player is told the reason (the last line) and can import
+     * again, so there is nothing to keep the whole run for.
+     */
     private fun importPackage(packageFile: File, onDone: (Boolean, String) -> Unit) {
         val buf = StringBuilder()
-        PortRunner(env, guestLauncher, locale) { line -> buf.appendLine(line); AppLog.line(line) }
+        PortRunner(env, guestLauncher, locale) { line -> buf.appendLine(line) }
             .importProfiles(packageFile.absolutePath) { code ->
                 importingProfiles = false
                 readProfiles()
@@ -378,8 +383,9 @@ class EnvCheckState @Inject constructor(
     /**
      * Runs the doctor's check and puts its rows here.
      *
-     * The raw output goes to the log: the settings page's own output box is gone, and the log is where the
-     * output of a broken environment can be looked at (and shared).
+     * The raw output goes into the buffer and no further: the checklist shows the rows, and a run that
+     * cannot be parsed says so instead of pretending. The app's own log keeps to what the app itself
+     * has to say.
      */
     fun runDoctor() {
         if (running) return
@@ -388,7 +394,7 @@ class EnvCheckState @Inject constructor(
         noOutput = false
         rows = listOf()
         val out = StringBuilder()
-        PortRunner(env, guestLauncher, locale) { line -> out.appendLine(line); AppLog.line(line) }
+        PortRunner(env, guestLauncher, locale) { line -> out.appendLine(line) }
             .doctor(keysPath, json = true) {
                 running = false
                 val parsed = DoctorOutput.rows(out.toString())

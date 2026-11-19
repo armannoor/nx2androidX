@@ -13,23 +13,24 @@ import org.junit.Test
 class GameInfoReaderTest {
 
     @Test
-    fun `the same file is read once and the answer is kept`() = runTest {
+    fun `the same file is read again, so a changed game folder is seen`() = runTest {
         val inspector = FakeInspector()
-        inspector.answers["/games/one.nsp"] = GameInfo(titleId = "0100AAAA00000000")
+        inspector.answers["/games/one.nsp"] = GameInfo(titleId = "0100AAAA00000000", packVersion = "v0")
         val reader = GameInfoReader(inspector, backgroundScope)
 
         reader.read(File("/games/one.nsp"), "")
         runCurrent()
         assertEquals(1, inspector.calls.size)
-        assertEquals("0100AAAA00000000", reader.info?.titleId)
+        assertEquals("v0", reader.info?.packVersion)
 
+        // the folder changed under it (an update NSP renamed in): the reading is taken again
+        inspector.answers["/games/one.nsp"] = GameInfo(titleId = "0100AAAA00000000", packVersion = "v65536")
         reader.read(File("/games/one.nsp"), "")
         runCurrent()
-        // the answer was kept: the guest is not started again
-        assertEquals(1, inspector.calls.size)
-        // every read counts, the cached one included: the page reacts to each of them
+        // no cache: the guest ran again, and the fresh answer is what the page sees
+        assertEquals(2, inspector.calls.size)
         assertEquals(2, reader.reads)
-        assertEquals("0100AAAA00000000", reader.info?.titleId)
+        assertEquals("v65536", reader.info?.packVersion)
     }
 
     @Test

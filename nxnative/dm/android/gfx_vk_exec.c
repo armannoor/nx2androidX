@@ -160,6 +160,7 @@ static void cpu_ready_config(void) {
     g_vk_cpu_ready = !(e && !atoi(e));   // live A/B: =0 leaves CPU reads unsynchronized
 }
 static void x_read(void) { cpu_ready_config(); const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
+    { const char *e = getenv("DM_VK_DS_ASPECT"); g_vk_ds_aspect = e ? atoi(e) : 0; }   // live A/B: which plane a sampled depth-stencil view reads
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
     const char *tp = getenv("DM_VK_TRACE_PASS"); g_x_tracepass = tp ? atoi(tp) : -1;
@@ -1347,17 +1348,20 @@ static VkSampler samp_for(int st, const dmsv_bind *b, uint64_t texh, int nearest
     VkSampler vk_samp_by_id_nearest(int sid), vk_samp_at(int sid, uint64_t seq, int nearest); uint64_t mtl_samp_seq(void);
     if (!g_samp_snap || seq >= mtl_samp_seq()) seq = 0;   // no registration since the bind: the newest (the cached lookups)
     VkSampler s = !sid ? VK_NULL_HANDLE : seq ? vk_samp_at(sid, seq, nearest) : nearest ? vk_samp_by_id_nearest(sid) : samp_cached(sid);
-    static int nsl; if (g_tracing || (g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs && nsl++ < 60)) { char d[256]; void vk_samp_describe_at(int sid, uint64_t seq, char *out, size_t n); vk_samp_describe_at(sid, seq, d, sizeof d); VKLOG("  %sbinding %d: %s (texture handle %#llx, present %llu, pass %d, thread %d)", g_tracing ? "" : "logfs ", b->binding, d, (unsigned long long)texh, (unsigned long long)g_tex_frame, g_sub_pass - 1, (int)gettid()); }
+    static int nsl, nslt; int logb = (g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs) || g_logt_draw; int *nc = g_logt_draw ? &nslt : &nsl;
+    if (g_tracing || (logb && (*nc)++ < g_x_logfs_max)) { char d[256]; void vk_samp_describe_at(int sid, uint64_t seq, char *out, size_t n); vk_samp_describe_at(sid, seq, d, sizeof d); VKLOG("  %sbinding %d: %s (texture handle %#llx, present %llu, pass %d, thread %d)", g_tracing ? "" : (g_logt_draw ? "logt " : "logfs "), b->binding, d, (unsigned long long)texh, (unsigned long long)g_tex_frame, g_sub_pass - 1, (int)gettid()); }
     return s ? s : vk_dummy_sampler();
 }
 // texture views by ID within a submission: a draw's texture arrays (32 slots) looked every slot up again, each through the registry's and the view table's
 // locks (NEO: about 2 ms a frame). An entry holds while no texture ID is registered again and no view is dropped (g_tex_gen)
 enum { TVC = 4096 };
-static struct { uint64_t epoch, gen; int tid, dim, arr, num, sc; VkImageView v; vkimg_t *im; } g_tvc[TVC];
+static struct { uint64_t epoch, gen; int tid, dim, arr, num, sc; VkImageView v; vkimg_t *im; VkImageAspectFlags asp; } g_tvc[TVC];
 // what a view's texels are, as gfx_vk_shader.c's integer-texel variants need it: 0 float, 1 uint (unsigned integer formats, a stencil), 2 int
 static int view_num(const tex_t *t, const view_t *v) {
+    const vkfmt_t *imf = vk_fmt(t->d.format);   // the image's own format: its aspect decides which plane a view of it reads
+    if (imf && imf->depth) return (imf->stencil && vk_ds_stencil(t, v)) ? 1 : 0;   // a combined image reads the plane the game asked for
+    if (imf && imf->stencil) return 1;   // a stencil-only image reads the stencil
     const vkfmt_t *f = vk_fmt(v && v->set_format ? v->format : t->d.format); if (!f) return 0;
-    if (f->depth || f->stencil) return f->stencil && (!f->depth || t->stencil || (v && v->set_dsmode && v->dsmode == 1));   // vk_tex_view's aspect
     return f->is_int ? (f->is_sint ? 2 : 1) : 0;
 }
 // the integer class a storage image binding's shader declares, from the SPIR-V image format the translator recorded (dmsv_bind.fmt, shader_vk.py): 1 uint, 2 sint,
@@ -1392,6 +1396,23 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
         if (tf && !tf->compressed && !tf->dec && !tf->depth && !tf->stencil) vf = vk_int_fmt(tf->bpb, sc == 2);
         vkimg_t *im = NULL; ii->imageView = vf ? vk_tex_view_as(t, v, b->dim, b->flags & 1, 0, &im, vf) : vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
         if (vf && ii->imageView && vk_view_fmt == vf) { static int once; if (!once++) VKLOG("storage image: nvn format %#x viewed as vk %d for a %s image binding", t->d.format, vf, sc == 1 ? "uint" : "int"); }
+        // A depth / stencil binding: which storage it reads and which aspect the view has (the stencil of a depth-stencil storage is a different aspect, and a
+        // stencil-mode texture (Unreal Engine 4.27's stencil shader resources) reads the stencil, not the depth)
+        if (im && (im->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
+            static int nds; static int nds_max = -1;
+            if (nds_max < 0) { const char *e = getenv("DM_VK_LOG_DS_MAX"); nds_max = e ? atoi(e) : 60; }   // how many such bindings the log takes (60 by default)
+            if (nds++ < nds_max) VKLOG("depth / stencil binding: shader %016llx binding %d: texture %d format %#x (stencil mode %d), the view's dsmode %d, the view's format %#x%s → the image %ux%u format %d aspect %d at pool %p +%lld, the view's aspect %d",
+                (unsigned long long)(S.sh[1] ? S.sh[1]->key : 0), (int)b->binding, tid, t->d.format, t->stencil, (v && v->set_dsmode) ? v->dsmode : -1,
+                (v && v->set_format) ? v->format : 0, (v && v->set_format) ? "" : " (the texture's own)",
+                im->w, im->h, im->fmt, im->aspect, (void *)im->pool, (long long)im->off, vk_view_aspect);
+            // one line per shader and binding that reads a depth-stencil texture: what it reads and which plane (the aspect of the view in use, not of a later one)
+            { static uint64_t seen[64]; static int nseen; uint64_t k = ((uint64_t)(S.sh[1] ? S.sh[1]->key : 0) << 8) | (uint64_t)b->binding;
+              int i = 0; while (i < nseen && seen[i] != k) i++;
+              if (i == nseen && nseen < 64) { seen[nseen++] = k; VKLOG("depth / stencil reader: shader %016llx binding %d: texture %d format %#x, the view's aspect %d (%s), the image %ux%u, the texel class %d",
+                  (unsigned long long)(S.sh[1] ? S.sh[1]->key : 0), (int)b->binding, tid, t->d.format, vk_view_aspect,
+                  vk_view_aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? "the depth" : vk_view_aspect == VK_IMAGE_ASPECT_STENCIL_BIT ? "the stencil" : "both",
+                  im->w, im->h, view_num(t, v)); } }
+        }
         // DM_VK_BIND_DUMP=<pixel shader key hex>:<binding>: write the storage of the texture that binding really resolved to (slots alone are polluted by stale
         // entries from earlier draws and say nothing about which binding reads which); deswizzle it offline with the dimensions in the line
         { static int bd_read; static const char *bd; if (!bd_read) { bd = getenv("DM_VK_BIND_DUMP"); bd_read = 1; }   // read once: this runs for every texture binding of every game

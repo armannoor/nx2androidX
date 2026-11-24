@@ -643,6 +643,81 @@ def cpk_shaders(path, rel, ents, out):
             print(f'[RED] /{rel}/{e[0]}: {x}; not scanned', flush=True); continue
         scan_blob(d, f'/{rel}/{e[0]}', out)
 
+# Rockstar's RPF6 archives, RAGE's effects and Double Eleven's packs, adapted from seedds/nxnative's shader_split.py (PR #2005): Red Dead Redemption (01007820196A6000) keeps its
+# shaders in 134 RPF6 archives (11 GB), whose entry and name tables are AES encrypted with a key that lies in main (rpf6.py finds it and never writes it to disk).
+RPF6, RGXD = b'RPF6', b'rgxd'
+def rpf_jobs(files, mains, parts=64):
+    """Every file of every Rockstar RPF6 archive in ranges of about equal stored length (Red Dead Redemption: 134 archives, 11 GB; its shaders are the .nvn effects in shaders.rpf, but no
+    file name is relied on). The entry and name tables are AES encrypted with a key in main (rpf6.py find_key): the first main that opens the first archive gives it.
+    → ([(path, rel, (RPF6, key, entries)), …], the RPF6 paths)"""
+    import rpf6
+    rp = [(p, r) for p, r in files if rpf6.header(p) is not None]
+    if not rp: return [], set()
+    hint = GAME.get('shader_rpf_key_offset', '')   # the key's place in the base game's main (the key itself is never written to disk); empty: the search finds it
+    key = None
+    for i, m in enumerate(mains):
+        k = rpf6.find_key(m, rp[0][0], int(hint, 0) if i == 0 and hint else None)
+        if k is not None: key = k; break
+    if key is None: red(f'/{rp[0][1]}: an encrypted RPF6 archive, and no 32-byte window of main decrypts its first entry to the root directory')
+    arcs = [(p, r, rpf6.Rpf(p, key).files) for p, r in rp]
+    jobs, step = [], max(1, sum(e[2] for _, _, es in arcs for e in es) / parts)
+    for p, r, es in arcs:
+        cur, size = [], 0
+        for e in es:
+            cur.append(e); size += e[2]
+            if size >= step: jobs.append((p, r, (RPF6, key, tuple(cur)))); cur, size = [], 0
+        if cur: jobs.append((p, r, (RPF6, key, tuple(cur))))
+    return jobs, {p for p, _ in rp}
+
+def rpf_shaders(path, rel, key, ents, out):
+    """A range of RPF6 files (rpf_jobs), each zstd-decoded and scanned like a loose file"""
+    import rpf6
+    r = rpf6.Rpf.__new__(rpf6.Rpf); r.path, r.key = path, key   # the entries came with the job; only read() is needed
+    z = zstd_mod()
+    with open(path, 'rb') as f:
+        for e in ents: scan_blob(r.read(f, e, z), f'/{rel}/{e[0]}', out)
+
+def rgxd_shaders(d, label):
+    """A RAGE effect ('rgxd', Red Dead Redemption's .nvn files in shaders.rpf: 131 effects, 3,413 shaders, 2,089 vertex and 1,324 pixel): after the effect's parameter names, each shader is a
+    record {u32 length, u32 0x19866891 (GLSLC's magic), u32 code length, u32 control length}, then the code area, then the control section. The records are packed (not 4-aligned).
+    919 of the 3,413 control sections are 12·n bytes longer than their own length (control +0x20, n = 1…11); the extra bytes stay with the section (ctl_len keys on its own length).
+    The first word is not the record's own length (0x2df8 for a 0x500 + 0x880 shader); it is not needed to find the shaders"""
+    out, n = [], d.count(CTL_MAGIC)
+    for m in re.finditer(b'\x91\x68\x86\x19', d):
+        h = m.start() - 4
+        if h < 0 or h + 16 > len(d): continue
+        _, _, nk, nc = struct.unpack_from('<4I', d, h)
+        if h + 16 + nk + nc > len(d): continue
+        code, ctl = d[h + 16:h + 16 + nk], d[h + 16 + nk:h + 16 + nk + nc]
+        st = glslc_stage(ctl, code) if ctl[:4] == CTL_MAGIC and len(ctl) >= 0x760 else None
+        if st and not check(label, st, ctl, code): out.append((f'{label}#RGXD@{h:#x}', st, ctl, code))
+    if len(out) != n: print(f'[RED] {label}: {n} control sections, {len(out)} shader records read; the rest are left out', flush=True)
+    return out
+
+def d11_pack_shaders(path, label, out):
+    """Double Eleven's resource pack (Red Dead Redemption's d11extra/langselect.pkdswitch, the language selection shown before the game): the data file holds the members one after another, its
+    index beside it (.pkiswitch) is u32 version 3, u32 0, u32 member count (22), then per member {u32 length, u32 stored length, u32 offset in the data file, u32 name hash}; a member whose stored
+    length differs from its length is one zlib stream. Members 4 and 5 are whole GLSLC outputs, the screen's pixel and vertex shader (98664fb56b9c9fdf, 70d4dd8068044bb5): without them the host
+    found no vertex shader for the first program the game draws with. The others are textures ('DFvN') and fonts ('BMF')"""
+    with open(path[:-len('.pkdswitch')] + '.pkiswitch', 'rb') as f: idx = f.read()
+    with open(path, 'rb') as f: d = f.read()
+    if len(idx) < 12: red(f'{label}: the pack index is cut short ({len(idx)} bytes)')
+    ver, _, n = struct.unpack_from('<3I', idx)
+    if ver != 3: red(f'{label}: pack index version {ver}: only 3 is known')
+    if 12 + 16 * n > len(idx): red(f'{label}: the pack index lists {n} members but holds {(len(idx) - 12) // 16}')
+    for k in range(n):
+        size, stored, off, h = struct.unpack_from('<4I', idx, 12 + 16 * k)
+        if off + stored > len(d): red(f'{label}: member {k} runs past the end of the data file')
+        m = d[off:off + stored]
+        if stored != size:
+            try: m = zlib.decompress(m)
+            except zlib.error as e: red(f'{label}: member {k} ({h:08x}) is no zlib stream: {e}')
+            if len(m) != size: red(f'{label}: member {k} ({h:08x}) inflates to {len(m)} bytes, the index says {size}')
+        lb = f'{label}#{h:08x}'
+        found = []; scan_blob(m, lb, found)
+        if not found: found = glslc_shaders(m, lb, need=False)
+        out.extend(found)
+
 def pgdat_members(d, label):
     """A PlatinumGames DAT archive: 'DAT\\0', u32 file count, then the offsets of five tables: file offsets (u32 each), extensions (4 bytes each), names (u32 name length, then one name of that
     length each), file lengths (u32 each), a name hash map. Members may be DAT archives again. → [(name, data)], or None when the tables do not fit the data (another game's file that only starts
@@ -1614,6 +1689,7 @@ def scan_blob(d, label, out):
         for nm, m in sarc_members(d): scan_blob(m, f'{label}/{nm}', out)
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
+    if d[:4] == RGXD: out.extend(rgxd_shaders(d, label)); return
     if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
     if d[:4] == PGDAT and len(d) >= 0x1c and (mem := pgdat_members(d, label)) is not None:   # PlatinumGames
         for nm, m in mem: scan_blob(m, f'{label}/{nm}', out)
@@ -1929,6 +2005,9 @@ def scan_file(args):
     if head[:4] == NLG_DICT:
         nlg_shaders(path, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if path.endswith('.pkdswitch') and os.path.exists(path[:-len('.pkdswitch')] + '.pkiswitch'):   # Double Eleven's resource pack, read through its index (d11_pack_shaders)
+        d11_pack_shaders(path, '/' + rel, found)
+        return rel, uniq_keys(found), var_pairs(found), trees
     if head[:8] in (IDRK, PDRK):
         idrk_shaders(path, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -1958,6 +2037,9 @@ def scan_file(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:4] == b'BDF3':   # entries of a FromSoftware dvdbnd archive (bdt_jobs)
         bdt_shaders(path, rel, args[2], found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if len(args) > 2 and head[:4] == RPF6 and args[2][0] == RPF6:   # files of a Rockstar RPF6 archive (rpf_jobs)
+        rpf_shaders(path, rel, args[2][1], args[2][2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2:   # a range of LINKDATA entries (linkdata_jobs)
         linkdata_shaders(path, rel, args[2], found)
@@ -2063,7 +2145,9 @@ def main():
         found = []; scan_blob(img, main_label, found)
         found += glslc_shaders(img, main_label, need=False)
         found += embedded_nx_shaders(img, main_label)
-        found += raw_shaders(img, main_label, {c for _, _, c, _ in found})
+        if RGXD in img: found += rgxd_shaders(img, main_label)   # RAGE's built-in effects (Red Dead Redemption: 20 in main's data, 168 shaders that shaders.rpf lacks)
+        # the control sections are compared at their own length (control +0x20), as raw_shaders reads them: 919 of Red Dead Redemption's 3,413 are 12·n bytes longer than that
+        found += raw_shaders(img, main_label, {c[:struct.unpack_from('<I', c, 0x20)[0]] if len(c) >= 0x24 else c for _, _, c, _ in found})
         # GLSLC outputs the game compiles at run time, captured on the Mac (hle_glslc.c): <version dir>/glslc_capture, or DM_GLSLC_CAPTURE. A game needs them when main holds GLSL sources and
         # calls glslcCompile in a module it loads (Fire Emblem: Three Houses; profile_guess.py shader_sources). Captain Toad: Treasure Tracker imports it with agl's GLSL sources, but no module defines it
         cap = os.environ.get('DM_GLSLC_CAPTURE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'glslc_capture')
@@ -2101,8 +2185,9 @@ def main():
     ar_jobs, ards = ard_jobs(files)   # Xenoblade Chronicles 3's archive (bf3.arh / bf3.ard)
     cp_jobs, cpks = cpk_jobs(files)   # CRI CPK entries, decoded and scanned recursively (PlatinumGames DATs)
     ls_jobs, lspks = lspk_jobs([(p, r) for p, r in files if p not in paks])   # Divinity: Original Sin 2's Larian packages (and their footerless _N parts)
-    big += cp_jobs + pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ar_jobs + ls_jobs + ea_jobs
-    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in ards and p not in cpks and p not in lspks and p not in ea_archives]
+    rp_jobs, rpfs = rpf_jobs(files, main_v)   # Red Dead Redemption's RPF6 archives, their tables decrypted with the key in main (rpf6.py)
+    big += cp_jobs + pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ar_jobs + ls_jobs + ea_jobs + rp_jobs
+    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in ards and p not in cpks and p not in lspks and p not in ea_archives and p not in rpfs]
     results += pool_map(scan_file, big, J, (common, {}, zdicts)) + pool_map(scan_file, files, J, (common, {}, zdicts), chunksize=16)
     trees, defer = {}, []
     for rel, uniq, pr, extra in results:

@@ -36,6 +36,9 @@ sys_resource	0x0
 # ---- Shader split ----
 shader_groups	/redemption/=redemption /cero/=cero /d11extra/=d11extra
 shader_note	Red Dead Redemption shaders (RAGE effects in shaders.rpf and main, Double Eleven pack)
+# the AES key of the RPF6 archives' tables is in the game's own main; this is where in 1.0.0's main image it lies (the key itself is never written to disk). The split's
+# window search finds it without this row too, but it takes 24 s on the phone instead of 0.25 s
+shader_rpf_key_offset	0x3757f88
 
 # ---- After the rewrite ----
 # used memory for the rewritten modules, at least the default 64 MB: 1.0.0's (1.0.4's fit in the default)
